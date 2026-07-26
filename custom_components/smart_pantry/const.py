@@ -3,7 +3,7 @@
 from typing import Final
 
 DOMAIN: Final = "smart_pantry"
-PLATFORMS: Final = ["sensor"]
+PLATFORMS: Final = ["sensor", "button"]
 
 CONF_HOUSEHOLD_NAME: Final = "household_name"
 CONF_CURRENCY: Final = "currency"
