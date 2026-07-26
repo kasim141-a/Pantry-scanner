@@ -1,0 +1,322 @@
+add_item:
+  name: Add Item
+  description: Add or update an item in the pantry inventory.
+  fields:
+    item_name:
+      name: Item Name
+      description: Name of the food item.
+      required: true
+      example: "Milk"
+      selector:
+        text:
+    quantity:
+      name: Quantity
+      description: Amount of the item.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 9999
+          step: 0.1
+          mode: box
+    unit:
+      name: Unit
+      description: Unit of measurement.
+      required: false
+      default: piece
+      selector:
+        select:
+          options:
+            - piece
+            - g
+            - kg
+            - oz
+            - lb
+            - ml
+            - l
+            - cup
+            - tbsp
+            - tsp
+            - bottle
+            - can
+            - box
+            - bag
+            - pack
+    category:
+      name: Category
+      description: Food category.
+      required: false
+      default: other
+      selector:
+        select:
+          options:
+            - produce
+            - dairy
+            - meat
+            - seafood
+            - bakery
+            - pantry
+            - frozen
+            - beverages
+            - condiments
+            - snacks
+            - other
+    expiration_date:
+      name: Expiration Date
+      description: Expiration date in YYYY-MM-DD format.
+      required: false
+      example: "2026-08-15"
+      selector:
+        text:
+    storage_location:
+      name: Storage Location
+      description: Where the item is stored.
+      required: false
+      default: pantry
+      selector:
+        select:
+          options:
+            - pantry
+            - refrigerator
+            - freezer
+            - countertop
+            - wine_cellar
+            - other
+    barcode:
+      name: Barcode
+      description: Product barcode (UPC/EAN).
+      required: false
+      example: "038000138133"
+      selector:
+        text:
+    notes:
+      name: Notes
+      description: Additional notes about the item.
+      required: false
+      selector:
+        text:
+
+remove_item:
+  name: Remove Item
+  description: Remove an item from the pantry.
+  fields:
+    item_name:
+      name: Item Name
+      description: Name of the item to remove.
+      required: true
+      example: "Milk"
+      selector:
+        text:
+
+update_item:
+  name: Update Item
+  description: Update specific fields of a pantry item.
+  fields:
+    item_name:
+      name: Item Name
+      description: Name of the item to update.
+      required: true
+      example: "Milk"
+      selector:
+        text:
+    quantity:
+      name: Quantity
+      description: New quantity.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 9999
+          step: 0.1
+          mode: box
+    unit:
+      name: Unit
+      description: New unit.
+      required: false
+      selector:
+        select:
+          options:
+            - piece
+            - g
+            - kg
+            - oz
+            - lb
+            - ml
+            - l
+            - cup
+            - tbsp
+            - tsp
+            - bottle
+            - can
+            - box
+            - bag
+            - pack
+    category:
+      name: Category
+      description: New category.
+      required: false
+      selector:
+        select:
+          options:
+            - produce
+            - dairy
+            - meat
+            - seafood
+            - bakery
+            - pantry
+            - frozen
+            - beverages
+            - condiments
+            - snacks
+            - other
+    expiration_date:
+      name: Expiration Date
+      description: New expiration date (YYYY-MM-DD).
+      required: false
+      selector:
+        text:
+    storage_location:
+      name: Storage Location
+      description: New storage location.
+      required: false
+      selector:
+        select:
+          options:
+            - pantry
+            - refrigerator
+            - freezer
+            - countertop
+            - wine_cellar
+            - other
+    notes:
+      name: Notes
+      description: New notes.
+      required: false
+      selector:
+        text:
+
+scan_barcode:
+  name: Scan Barcode
+  description: Scan a product barcode and auto-add to pantry.
+  fields:
+    barcode:
+      name: Barcode
+      description: Product barcode string.
+      required: true
+      example: "038000138133"
+      selector:
+        text:
+    quantity:
+      name: Quantity
+      description: Quantity to add.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 999
+          step: 1
+          mode: box
+    expiration_date:
+      name: Expiration Date
+      description: Override auto-calculated expiration date.
+      required: false
+      selector:
+        text:
+
+get_recipes:
+  name: Get Recipes
+  description: Get AI recipe suggestions based on pantry inventory.
+  fields:
+    recipe_count:
+      name: Recipe Count
+      description: Number of recipes to suggest.
+      required: false
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 20
+          step: 1
+          mode: slider
+
+add_to_shopping_list:
+  name: Add to Shopping List
+  description: Add an item to the smart shopping list.
+  fields:
+    item_name:
+      name: Item Name
+      description: Item to add.
+      required: true
+      example: "Eggs"
+      selector:
+        text:
+    quantity:
+      name: Quantity
+      description: Amount needed.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 0.1
+          max: 999
+          step: 0.1
+          mode: box
+    unit:
+      name: Unit
+      description: Unit of measurement.
+      required: false
+      default: piece
+      selector:
+        select:
+          options:
+            - piece
+            - g
+            - kg
+            - oz
+            - lb
+            - ml
+            - l
+            - cup
+            - tbsp
+            - tsp
+            - bottle
+            - can
+            - box
+            - bag
+            - pack
+    notes:
+      name: Notes
+      description: Notes for the shopper.
+      required: false
+      example: "Organic, free-range"
+      selector:
+        text:
+
+clear_shopping_list:
+  name: Clear Shopping List
+  description: Remove all items from the shopping list.
+
+mark_consumed:
+  name: Mark Consumed
+  description: Mark an item as consumed (used in a meal).
+  fields:
+    item_name:
+      name: Item Name
+      description: Item that was consumed.
+      required: true
+      example: "Chicken"
+      selector:
+        text:
+    quantity:
+      name: Quantity
+      description: Amount consumed.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 0.1
+          max: 999
+          step: 0.1
+          mode: box

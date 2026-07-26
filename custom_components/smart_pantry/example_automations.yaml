@@ -1,0 +1,95 @@
+# Smart Pantry Scanner — Example Automations
+
+- alias: "Daily Pantry Status"
+  trigger:
+    - platform: time
+      at: "08:00:00"
+  action:
+    - service: notify.mobile_app_phone
+      data:
+        title: "🥦 Good Morning!"
+        message: >
+          Pantry: {{ states('sensor.smart_pantry_total_items') }} items.
+          Expiring soon: {{ states('sensor.smart_pantry_expiring_soon') }}.
+          Shopping list: {{ states('sensor.smart_pantry_shopping_list') }} items.
+
+- alias: "Critical Expiration Alert"
+  trigger:
+    - platform: state
+      entity_id: sensor.smart_pantry_expiring_soon
+  condition:
+    - condition: template
+      value_template: "{{ states('sensor.smart_pantry_expiring_soon') | int > 0 }}"
+  action:
+    - service: persistent_notification.create
+      data:
+        title: "⚠️ Items Expiring Soon"
+        message: >
+          {% set items = state_attr('sensor.smart_pantry_expiring_soon', 'items') %}
+          {% for item in items %}
+          • {{ item.name }} ({{ item.days_until_expiry }} days left)
+          {% endfor %}
+        notification_id: "pantry_expiring"
+
+- alias: "Weekly Shopping List Prep"
+  trigger:
+    - platform: time
+      at: "18:00:00"
+  condition:
+    - condition: time
+      weekday:
+        - sun
+  action:
+    - service: smart_pantry.get_recipes
+      data:
+        recipe_count: 3
+    - delay: "00:00:02"
+    - service: notify.mobile_app_phone
+      data:
+        title: "🛒 Weekly Meal Plan Ready"
+        message: "Check your dashboard for recipe suggestions and shopping list."
+
+- alias: "Weekly Budget Warning"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.smart_pantry_weekly_budget
+      above: 80
+  action:
+    - service: notify.mobile_app_phone
+      data:
+        title: "💰 Budget Alert"
+        message: >
+          You've used {{ states('sensor.smart_pantry_weekly_budget') }}% of your weekly grocery budget.
+          Remaining: {{ state_attr('sensor.smart_pantry_weekly_budget', 'remaining') }} {{ state_attr('sensor.smart_pantry_weekly_budget', 'currency') }}
+
+- alias: "Voice Mark Consumed"
+  trigger:
+    - platform: conversation
+      command:
+        - "I used {item}"
+        - "I cooked with {item}"
+  action:
+    - service: smart_pantry.mark_consumed
+      data:
+        item_name: "{{ trigger.slots.item }}"
+        quantity: 1
+    - service: tts.speak
+      target:
+        entity_id: tts.google_translate
+      data:
+        message: "Marked {{ trigger.slots.item }} as consumed. Great cooking!"
+
+- alias: "Post-Grocery Clear List"
+  trigger:
+    - platform: state
+      entity_id: input_boolean.grocery_trip_done
+      to: "on"
+  action:
+    - service: smart_pantry.clear_shopping_list
+    - service: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.grocery_trip_done
+    - service: notify.mobile_app_phone
+      data:
+        title: "✅ Shopping Complete"
+        message: "Shopping list cleared. Don't forget to scan your new items!"
