@@ -1,7 +1,6 @@
 {
   "name": "Smart Pantry Scanner",
   "content_in_root": false,
-  "filename": "smart_pantry.zip",
   "country": ["US", "CA", "GB", "AU", "DE", "FR"],
   "homeassistant": "2024.1.0",
   "render_readme": true,
