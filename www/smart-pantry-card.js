@@ -17,14 +17,21 @@ class SmartPantryCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entity: 'sensor.smart_pantry_my_home_total_items' };
+    return { entity: 'sensor.smart_pantry_scanner_smart_pantry_my_home_total_items' };
   }
 
   setConfig(config) {
     if (!config.entity) {
-      throw new Error('You need to define an entity');
+      throw new Error('You need to define an entity (e.g. sensor.smart_pantry_scanner_smart_pantry_my_home_total_items)');
     }
-    this._config = config;
+    this._config = {
+      entity: config.entity,
+      low_stock_threshold: config.low_stock_threshold != null ? Number(config.low_stock_threshold) : 1,
+      expiry_warning_days: config.expiry_warning_days != null ? Number(config.expiry_warning_days) : 3,
+      show_suggestions: config.show_suggestions !== false,
+      theme: config.theme || 'default',
+      title: config.title,
+    };
   }
 
   set hass(hass) {
@@ -156,9 +163,15 @@ class SmartPantryCard extends HTMLElement {
     const entityId = this._config.entity;
     const state = this._hass ? this._hass.states[entityId] : null;
     if (!state) {
+      const hint = entityId.includes('smart_pantry')
+        ? 'Check the exact entity ID in Developer Tools → States'
+        : 'Use sensor.smart_pantry_scanner_&lt;household&gt;_total_items';
       this.content.innerHTML = this._styles() +
-        '<div style="color:#E53935;text-align:center;padding:20px;">Entity not found: ' +
-        this._escape(entityId) + '</div>';
+        '<div style="padding:20px;text-align:center;">' +
+        '<div style="color:#E53935;font-weight:600;margin-bottom:8px;">Entity not found</div>' +
+        '<div style="font-size:12px;color:var(--secondary-text-color);word-break:break-all;">' + this._escape(entityId) + '</div>' +
+        '<div style="font-size:11px;color:var(--secondary-text-color);margin-top:8px;">' + hint + '</div>' +
+        '</div>';
       return;
     }
 
@@ -188,7 +201,12 @@ class SmartPantryCard extends HTMLElement {
     const expiringItems = (expiringSoon && expiringSoon.attributes && expiringSoon.attributes.items) || [];
     const shoppingItems = (shoppingList && shoppingList.attributes && shoppingList.attributes.items) || [];
     const pantryCategories = (totalItems && totalItems.attributes && totalItems.attributes.categories) || {};
-    const lowStockItems = (totalItems && totalItems.attributes && totalItems.attributes.low_stock_items) || [];
+    const threshold = this._config.low_stock_threshold;
+    const allItems = (totalItems && totalItems.attributes && totalItems.attributes.all_items) || [];
+    // Filter by card config threshold; fall back to backend pre-filtered list if all_items not yet available.
+    const lowStockItems = allItems.length > 0
+      ? allItems.filter((i) => i.quantity <= threshold)
+      : (totalItems && totalItems.attributes && totalItems.attributes.low_stock_items) || [];
 
     let html = this._styles() + '<div class="sp-container">';
 
