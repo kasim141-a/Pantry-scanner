@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import (
     DOMAIN, STORAGE_KEY_PANTRY, STORAGE_VERSION,
     BUILT_IN_RECIPES, BARCODE_DB,
-    EXPIRE_WARNING_DAYS, EXPIRE_CRITICAL_DAYS,
+    EXPIRE_WARNING_DAYS, EXPIRE_CRITICAL_DAYS, LOW_STOCK_THRESHOLD,
     CONF_HOUSEHOLD_NAME, CONF_CURRENCY, CONF_WEEKLY_BUDGET, CONF_DIET_PREFERENCE,
     DEFAULT_HOUSEHOLD_NAME, DEFAULT_CURRENCY, DEFAULT_WEEKLY_BUDGET, DEFAULT_DIET_PREFERENCE,
 )
@@ -124,6 +124,17 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             expiration_date = expiry.strftime("%Y-%m-%d")
         await self.add_item(name=name, quantity=quantity, category=product["category"],
                             expiration_date=expiration_date, barcode=barcode)
+        data = await self._async_update_data()
+        item = data["pantry"].get(name.lower().strip(), {})
+        self.hass.bus.async_fire(f"{DOMAIN}_scan_result", {
+            "barcode": barcode,
+            "item_name": name,
+            "quantity": item.get("quantity", quantity),
+            "unit": item.get("unit", "piece"),
+            "category": product["category"],
+            "expiration_date": item.get("expiration_date"),
+            "low_stock": item.get("quantity", quantity) <= LOW_STOCK_THRESHOLD,
+        })
 
     async def mark_consumed(self, name: str, quantity: float = 1) -> None:
         data = await self._async_update_data()
@@ -147,13 +158,31 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
     async def add_to_shopping_list(self, name: str, quantity: float = 1,
                                    unit: str = "piece", notes: str | None = None) -> None:
         data = await self._async_update_data()
-        data["shopping_list"].append({
-            "name": name, "quantity": quantity, "unit": unit,
-            "notes": notes, "added_at": datetime.now().isoformat(), "purchased": False,
-        })
-        await self.store.async_save(data)
-        await self.async_request_refresh()
+        existing = next((i for i in data["shopping_list"] if i["name"].lower() == name.lower()), None)
+        if not existing:
+            data["shopping_list"].append({
+                "name": name, "quantity": quantity, "unit": unit,
+                "notes": notes, "added_at": datetime.now().isoformat(), "purchased": False,
+            })
+            await self.store.async_save(data)
+            await self.async_request_refresh()
+        try:
+            display_name = f"{name} ({quantity} {unit})" if quantity != 1 or unit != "piece" else name
+            await self.hass.services.async_call(
+                "shopping_list", "add_item", {"name": display_name}, blocking=False,
+            )
+        except Exception as err:
+            _LOGGER.warning("HA shopping_list sync failed (integration may not be enabled): %s", err)
         _LOGGER.info("Added to shopping list: %s", name)
+
+    def get_low_stock_items(self, threshold: int = LOW_STOCK_THRESHOLD) -> list[dict]:
+        data = self.data or {}
+        return [
+            {"name": i["name"], "quantity": i["quantity"], "unit": i["unit"],
+             "category": i.get("category", "other")}
+            for i in data.get("pantry", {}).values()
+            if i.get("quantity", 0) <= threshold
+        ]
 
     async def clear_shopping_list(self) -> None:
         data = await self._async_update_data()

@@ -65,6 +65,7 @@ UNITS: Final = [
 
 EXPIRE_WARNING_DAYS: Final = 3
 EXPIRE_CRITICAL_DAYS: Final = 1
+LOW_STOCK_THRESHOLD: Final = 1
 
 BUILT_IN_RECIPES: Final = [
     {

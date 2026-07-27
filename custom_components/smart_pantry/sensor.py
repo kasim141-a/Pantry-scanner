@@ -86,7 +86,12 @@ class PantryTotalItemsSensor(SmartPantryBaseSensor):
             loc = item.get("storage_location", "other")
             categories[cat] = categories.get(cat, 0) + 1
             locations[loc] = locations.get(loc, 0) + 1
-        return {"categories": categories, "locations": locations, "last_updated": datetime.now().isoformat()}
+        return {
+            "categories": categories,
+            "locations": locations,
+            "last_updated": datetime.now().isoformat(),
+            "low_stock_items": self.coordinator.get_low_stock_items(),
+        }
 
 
 class PantryExpiringSoonSensor(SmartPantryBaseSensor):
