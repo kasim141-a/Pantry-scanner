@@ -1,0 +1,40 @@
+{
+  "title": "Smart Pantry Scanner",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Smart Pantry Scanner",
+        "description": "Configure your household pantry settings.",
+        "data": {
+          "household_name": "Household Name",
+          "currency": "Currency",
+          "weekly_budget": "Weekly Grocery Budget",
+          "diet_preference": "Dietary Preference",
+          "low_stock_threshold": "Low Stock Threshold (suggest restock at or below this quantity)",
+          "expiry_warning_days": "Expiry Warning Days (suggest replacement within this many days)",
+          "auto_add_to_ha_shopping_list": "Automatically add low/expiring scanned items to HA Shopping List"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This household is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Pantry Options",
+        "description": "Update your pantry settings.",
+        "data": {
+          "household_name": "Household Name",
+          "currency": "Currency",
+          "weekly_budget": "Weekly Grocery Budget",
+          "diet_preference": "Dietary Preference",
+          "low_stock_threshold": "Low Stock Threshold (suggest restock at or below this quantity)",
+          "expiry_warning_days": "Expiry Warning Days (suggest replacement within this many days)",
+          "auto_add_to_ha_shopping_list": "Automatically add low/expiring scanned items to HA Shopping List"
+        }
+      }
+    }
+  }
+}
