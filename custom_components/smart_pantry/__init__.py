@@ -18,6 +18,7 @@ from .const import (
     SERVICE_ADD_ITEM, SERVICE_REMOVE_ITEM, SERVICE_UPDATE_ITEM,
     SERVICE_SCAN_BARCODE, SERVICE_GET_RECIPES,
     SERVICE_ADD_TO_SHOPPING_LIST, SERVICE_CLEAR_SHOPPING_LIST, SERVICE_MARK_CONSUMED,
+    SERVICE_SYNC_SUGGESTIONS, SERVICE_ADD_RECIPE_MISSING, ATTR_RECIPE_NAME,
     ATTR_ITEM_NAME, ATTR_QUANTITY, ATTR_UNIT, ATTR_CATEGORY,
     ATTR_EXPIRATION_DATE, ATTR_STORAGE_LOCATION, ATTR_BARCODE, ATTR_NOTES, ATTR_RECIPE_COUNT,
     CATEGORIES, STORAGE_LOCATIONS, UNITS,
@@ -69,6 +70,10 @@ SERVICE_MARK_CONSUMED_SCHEMA = vol.Schema({
     vol.Optional(ATTR_QUANTITY, default=1): vol.Coerce(float),
 })
 
+SERVICE_ADD_RECIPE_MISSING_SCHEMA = vol.Schema({
+    vol.Required(ATTR_RECIPE_NAME): cv.string,
+})
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {})
@@ -80,6 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     hass.data[DOMAIN][entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     async def handle_add_item(call: ServiceCall) -> None:
         await coordinator.add_item(
@@ -124,6 +130,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_mark_consumed(call: ServiceCall) -> None:
         await coordinator.mark_consumed(name=call.data[ATTR_ITEM_NAME], quantity=call.data[ATTR_QUANTITY])
 
+    async def handle_sync_suggestions(call: ServiceCall) -> None:
+        count = await coordinator.sync_suggestions_to_shopping_list()
+        hass.bus.async_fire(f"{DOMAIN}_suggestions_synced", {"count": count})
+
+    async def handle_add_recipe_missing(call: ServiceCall) -> None:
+        count = await coordinator.add_recipe_missing_to_shopping_list(call.data[ATTR_RECIPE_NAME])
+        hass.bus.async_fire(f"{DOMAIN}_recipe_missing_added", {
+            "recipe_name": call.data[ATTR_RECIPE_NAME], "count": count,
+        })
+
     hass.services.async_register(DOMAIN, SERVICE_ADD_ITEM, handle_add_item, schema=SERVICE_ADD_ITEM_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_REMOVE_ITEM, handle_remove_item, schema=SERVICE_REMOVE_ITEM_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_UPDATE_ITEM, handle_update_item, schema=SERVICE_UPDATE_ITEM_SCHEMA)
@@ -132,6 +148,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_ADD_TO_SHOPPING_LIST, handle_add_to_shopping_list, schema=SERVICE_ADD_TO_SHOPPING_LIST_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_CLEAR_SHOPPING_LIST, handle_clear_shopping_list)
     hass.services.async_register(DOMAIN, SERVICE_MARK_CONSUMED, handle_mark_consumed, schema=SERVICE_MARK_CONSUMED_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_SYNC_SUGGESTIONS, handle_sync_suggestions)
+    hass.services.async_register(DOMAIN, SERVICE_ADD_RECIPE_MISSING, handle_add_recipe_missing, schema=SERVICE_ADD_RECIPE_MISSING_SCHEMA)
 
     return True
 
@@ -145,5 +163,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    """Reload the config entry when options change."""
+    await hass.config_entries.async_reload(entry.entry_id)

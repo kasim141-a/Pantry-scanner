@@ -12,7 +12,9 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
     DOMAIN, CONF_HOUSEHOLD_NAME, CONF_CURRENCY, CONF_WEEKLY_BUDGET, CONF_DIET_PREFERENCE,
+    CONF_LOW_STOCK_THRESHOLD, CONF_EXPIRY_WARNING_DAYS, CONF_AUTO_ADD_TO_HA_LIST,
     DEFAULT_HOUSEHOLD_NAME, DEFAULT_CURRENCY, DEFAULT_WEEKLY_BUDGET, DEFAULT_DIET_PREFERENCE, DIET_OPTIONS,
+    DEFAULT_LOW_STOCK_THRESHOLD, DEFAULT_EXPIRY_WARNING_DAYS, DEFAULT_AUTO_ADD_TO_HA_LIST,
 )
 
 CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "JPY", "CHF"]
@@ -38,6 +40,9 @@ class SmartPantryConfigFlow(ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_CURRENCY, default=DEFAULT_CURRENCY): vol.In(CURRENCIES),
             vol.Required(CONF_WEEKLY_BUDGET, default=DEFAULT_WEEKLY_BUDGET): vol.Coerce(int),
             vol.Required(CONF_DIET_PREFERENCE, default=DEFAULT_DIET_PREFERENCE): vol.In(DIET_OPTIONS),
+            vol.Required(CONF_LOW_STOCK_THRESHOLD, default=DEFAULT_LOW_STOCK_THRESHOLD): vol.Coerce(float),
+            vol.Required(CONF_EXPIRY_WARNING_DAYS, default=DEFAULT_EXPIRY_WARNING_DAYS): vol.Coerce(int),
+            vol.Required(CONF_AUTO_ADD_TO_HA_LIST, default=DEFAULT_AUTO_ADD_TO_HA_LIST): bool,
         })
         return self.async_show_form(step_id="user", data_schema=data_schema, errors=errors)
 
@@ -63,5 +68,8 @@ class SmartPantryOptionsFlow(OptionsFlow):
             vol.Required(CONF_CURRENCY, default=options.get(CONF_CURRENCY, DEFAULT_CURRENCY)): vol.In(CURRENCIES),
             vol.Required(CONF_WEEKLY_BUDGET, default=options.get(CONF_WEEKLY_BUDGET, DEFAULT_WEEKLY_BUDGET)): vol.Coerce(int),
             vol.Required(CONF_DIET_PREFERENCE, default=options.get(CONF_DIET_PREFERENCE, DEFAULT_DIET_PREFERENCE)): vol.In(DIET_OPTIONS),
+            vol.Required(CONF_LOW_STOCK_THRESHOLD, default=options.get(CONF_LOW_STOCK_THRESHOLD, DEFAULT_LOW_STOCK_THRESHOLD)): vol.Coerce(float),
+            vol.Required(CONF_EXPIRY_WARNING_DAYS, default=options.get(CONF_EXPIRY_WARNING_DAYS, DEFAULT_EXPIRY_WARNING_DAYS)): vol.Coerce(int),
+            vol.Required(CONF_AUTO_ADD_TO_HA_LIST, default=options.get(CONF_AUTO_ADD_TO_HA_LIST, DEFAULT_AUTO_ADD_TO_HA_LIST)): bool,
         })
         return self.async_show_form(step_id="init", data_schema=data_schema, errors=errors)

@@ -93,3 +93,66 @@
       data:
         title: "✅ Shopping Complete"
         message: "Shopping list cleared. Don't forget to scan your new items!"
+
+# NOTE: Replace the sensor entity IDs below with your actual IDs.
+# In most installs they look like:
+#   sensor.smart_pantry_scanner_smart_pantry_my_home_total_items
+# (Check Settings → Devices & Services → Smart Pantry Scanner → Entities.)
+
+- alias: "Auto-suggest shopping list when items run low or expire"
+  description: >
+    Every evening, push all current suggestions (low stock + expiring items)
+    into both the pantry list and HA's default Shopping List.
+  trigger:
+    - platform: time
+      at: "19:00:00"
+  condition:
+    - condition: numeric_state
+      entity_id: sensor.smart_pantry_scanner_smart_pantry_my_home_shopping_suggestions
+      above: 0
+  action:
+    - service: smart_pantry.sync_suggestions_to_shopping_list
+    - service: notify.mobile_app_phone
+      data:
+        title: "🛒 Shopping suggestions added"
+        message: >
+          {{ states('sensor.smart_pantry_scanner_smart_pantry_my_home_shopping_suggestions') }}
+          low-stock/expiring items were added to your Shopping List.
+
+- alias: "Notify when a scanned item is low or expiring"
+  trigger:
+    - platform: event
+      event_type: smart_pantry_scan_result
+      event_data:
+        suggest_shopping_list: true
+  action:
+    - service: notify.mobile_app_phone
+      data:
+        title: "⚠️ {{ trigger.event.data.item_name }}"
+        message: >
+          Scanned item is {{ 'expiring soon' if trigger.event.data.expiring else 'low in stock' }}.
+          {{ 'Added to Shopping List automatically.' if trigger.event.data.auto_added else 'Tap the card to add it to your Shopping List.' }}
+
+- alias: "Restock alert when an item is used up"
+  trigger:
+    - platform: event
+      event_type: smart_pantry_low_stock
+  action:
+    - service: notify.mobile_app_phone
+      data:
+        title: "🔴 Running low: {{ trigger.event.data.item_name }}"
+        message: >
+          {{ 'Used up completely.' if trigger.event.data.depleted else 'Only ' ~ trigger.event.data.quantity ~ ' ' ~ trigger.event.data.unit ~ ' left.' }}
+          Consider adding it to your shopping list.
+
+- alias: "Scan barcode from a dedicated ESPHome/tag scanner"
+  description: >
+    If you use an ESPHome barcode reader or the HA Tags feature, forward
+    scanned codes into the pantry.
+  trigger:
+    - platform: event
+      event_type: tag_scanned
+  action:
+    - service: smart_pantry.scan_barcode
+      data:
+        barcode: "{{ trigger.event.data.tag_id }}"

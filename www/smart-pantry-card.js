@@ -1,3 +1,12 @@
+/**
+ * Smart Pantry Card v1.2.0
+ *
+ * Views: main (dashboard + suggestions), recipes, scan.
+ * - Auto-discovers Smart Pantry entities (no exact entity id needed).
+ * - Shopping suggestions for low-stock and expiring items with one-tap add.
+ * - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
+ * - Syncs additions to Home Assistant's default Shopping List.
+ */
 class SmartPantryCard extends HTMLElement {
   constructor() {
     super();
@@ -10,6 +19,10 @@ class SmartPantryCard extends HTMLElement {
     this._codeReader = null;
     this._unsubRecipes = null;
     this._unsubScan = null;
+    this._entityBase = null;   // resolved base entity id (total_items sensor)
+    this._wedgeBuffer = '';
+    this._wedgeTimer = null;
+    this._wedgeListener = null;
   }
 
   static getConfigElement() {
@@ -17,29 +30,17 @@ class SmartPantryCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entity: 'sensor.smart_pantry_scanner_smart_pantry_my_home_total_items' };
+    return {};
   }
 
   setConfig(config) {
-    if (!config.entity) {
-      throw new Error('You need to define an entity (e.g. sensor.smart_pantry_scanner_smart_pantry_my_home_total_items)');
-    }
-    this._config = {
-      entity: config.entity,
-      low_stock_threshold: config.low_stock_threshold != null ? Number(config.low_stock_threshold) : 1,
-      expiry_warning_days: config.expiry_warning_days != null ? Number(config.expiry_warning_days) : 3,
-      show_suggestions: config.show_suggestions !== false,
-      theme: config.theme || 'default',
-      title: config.title,
-    };
+    // `entity` is now optional — the card auto-discovers Smart Pantry sensors.
+    this._config = config || {};
   }
 
   set hass(hass) {
     this._hass = hass;
 
-    // Subscribe to backend events exactly once. subscribeEvents resolves to an
-    // unsubscribe function; we store it so a later disconnect can clean up and
-    // so we never double-subscribe on repeated hass assignments.
     if (this._unsubRecipes === null && hass && hass.connection) {
       try {
         hass.connection
@@ -48,11 +49,8 @@ class SmartPantryCard extends HTMLElement {
             this._view = 'recipes';
             this._renderCard();
           }, 'smart_pantry_recipes_suggested')
-          .then((unsub) => {
-            this._unsubRecipes = unsub;
-          })
+          .then((unsub) => { this._unsubRecipes = unsub; })
           .catch((err) => {
-            // Keep the flag null so a future hass assignment can retry.
             console.error('SmartPantryCard: failed to subscribe to recipes event', err);
           });
 
@@ -62,15 +60,11 @@ class SmartPantryCard extends HTMLElement {
             this._view = 'scan';
             this._renderCard();
           }, 'smart_pantry_scan_result')
-          .then((unsub) => {
-            this._unsubScan = unsub;
-          })
+          .then((unsub) => { this._unsubScan = unsub; })
           .catch((err) => {
             console.error('SmartPantryCard: failed to subscribe to scan event', err);
           });
 
-        // Set a non-null sentinel synchronously so the block above does not run
-        // again before the async subscriptions resolve.
         this._unsubRecipes = this._unsubRecipes || (() => {});
       } catch (err) {
         console.error('SmartPantryCard: event subscription error', err);
@@ -83,7 +77,6 @@ class SmartPantryCard extends HTMLElement {
   }
 
   disconnectedCallback() {
-    // Clean up subscriptions and any live camera so the card leaves nothing running.
     if (typeof this._unsubRecipes === 'function') {
       try { this._unsubRecipes(); } catch (err) { /* already gone */ }
     }
@@ -91,18 +84,74 @@ class SmartPantryCard extends HTMLElement {
       try { this._unsubScan(); } catch (err) { /* already gone */ }
     }
     this._stopCamera();
+    this._detachWedgeListener();
   }
 
   getCardSize() {
     return 6;
   }
 
+  // ---- Entity resolution ---------------------------------------------------
+
+  /**
+   * Resolve the "total_items" sensor entity id.
+   * Priority: explicit config entity that exists → auto-discovery by suffix
+   * across all sensor entities → null.
+   */
+  _resolveBaseEntity() {
+    const hass = this._hass;
+    if (!hass) return null;
+
+    const configured = this._config.entity;
+    if (configured && hass.states[configured]) {
+      // Accept either the total_items sensor directly or any smart pantry
+      // sensor from which we can derive the base.
+      if (configured.includes('total_items')) return configured;
+      const derived = this._deriveSibling(configured, 'total_items');
+      if (derived && hass.states[derived]) return derived;
+      return configured;
+    }
+
+    if (this._entityBase && hass.states[this._entityBase]) {
+      return this._entityBase;
+    }
+
+    // Auto-discover: any sensor ending in `total_items` whose id contains `pantry`.
+    const candidates = Object.keys(hass.states).filter((id) =>
+      id.startsWith('sensor.') && id.endsWith('total_items') && id.includes('pantry')
+    );
+    this._entityBase = candidates.length > 0 ? candidates[0] : null;
+    return this._entityBase;
+  }
+
+  /** Derive a sibling sensor id by swapping known suffixes. */
+  _deriveSibling(entityId, targetSuffix) {
+    const suffixes = ['total_items', 'expiring_soon', 'expired_items', 'expired',
+      'savings', 'shopping_list', 'shopping_suggestions', 'suggestions',
+      'weekly_budget', 'waste_prevented'];
+    for (const s of suffixes) {
+      if (entityId.endsWith(s)) {
+        return entityId.slice(0, entityId.length - s.length) + targetSuffix;
+      }
+    }
+    return null;
+  }
+
+  /** Find a sibling entity that actually exists, trying alternative suffixes. */
+  _sibling(baseId, targetSuffixes) {
+    const hass = this._hass;
+    if (!hass || !baseId) return null;
+    for (const suffix of targetSuffixes) {
+      const id = this._deriveSibling(baseId, suffix);
+      if (id && hass.states[id]) return hass.states[id];
+    }
+    return null;
+  }
+
   // ---- Rendering ----------------------------------------------------------
 
   _ensureShell() {
-    if (this.content) {
-      return;
-    }
+    if (this.content) return;
     const card = document.createElement('ha-card');
     card.header = this._config.title || '🥦 Smart Pantry';
     this.content = document.createElement('div');
@@ -145,6 +194,7 @@ class SmartPantryCard extends HTMLElement {
       '.sp-btn-secondary { background: #FF9800; color: white; }' +
       '.sp-btn-ghost { background: var(--card-background-color, #fff); color: var(--primary-text-color); border: 1px solid var(--divider-color, #e0e0e0); }' +
       '.sp-btn-mini { padding: 5px 10px; border: none; border-radius: 8px; font-size: 11px; font-weight: 600; cursor: pointer; background: #2E7D32; color: white; }' +
+      '.sp-btn-mini:disabled { opacity: 0.5; cursor: default; }' +
       '.sp-btn-back { background: none; border: none; color: var(--primary-text-color); font-size: 14px; cursor: pointer; padding: 4px 0; margin-bottom: 12px; display: flex; align-items: center; gap: 4px; }' +
       '.sp-recipe-card { border: 1px solid var(--divider-color); border-radius: 12px; padding: 14px; margin-bottom: 10px; }' +
       '.sp-match-bar { height: 8px; border-radius: 100px; margin: 8px 0; }' +
@@ -154,59 +204,49 @@ class SmartPantryCard extends HTMLElement {
       '.sp-camera-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }' +
       '.sp-input { width: 100%; padding: 10px 14px; border: 1px solid var(--divider-color); border-radius: 10px; font-size: 14px; background: var(--card-background-color); color: var(--primary-text-color); box-sizing: border-box; }' +
       '.sp-warning { padding: 10px 14px; background: #FFF3E0; border-radius: 10px; color: #E65100; font-size: 13px; margin: 8px 0; }' +
+      '.sp-suggest { padding: 10px 14px; background: #E3F2FD; border-radius: 10px; color: #1565C0; font-size: 13px; margin: 8px 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }' +
       '</style>';
   }
 
   _renderCard() {
     this._ensureShell();
 
-    const entityId = this._config.entity;
-    const state = this._hass ? this._hass.states[entityId] : null;
-    if (!state) {
-      const hint = entityId.includes('smart_pantry')
-        ? 'Check the exact entity ID in Developer Tools → States'
-        : 'Use sensor.smart_pantry_scanner_&lt;household&gt;_total_items';
+    const baseId = this._resolveBaseEntity();
+    if (!baseId) {
       this.content.innerHTML = this._styles() +
-        '<div style="padding:20px;text-align:center;">' +
-        '<div style="color:#E53935;font-weight:600;margin-bottom:8px;">Entity not found</div>' +
-        '<div style="font-size:12px;color:var(--secondary-text-color);word-break:break-all;">' + this._escape(entityId) + '</div>' +
-        '<div style="font-size:11px;color:var(--secondary-text-color);margin-top:8px;">' + hint + '</div>' +
-        '</div>';
+        '<div style="color:#E53935;text-align:center;padding:20px;">' +
+        'No Smart Pantry sensors found.<br>' +
+        '<span style="font-size:12px;color:var(--secondary-text-color);">' +
+        'Make sure the Smart Pantry Scanner integration is set up ' +
+        '(Settings → Devices &amp; Services), then reload this page. ' +
+        'You can also set <code>entity:</code> to your ' +
+        '<code>…_total_items</code> sensor explicitly.</span></div>';
       return;
     }
 
-    if (this._view === 'recipes') {
-      this._renderRecipes();
-      return;
-    }
-    if (this._view === 'scan') {
-      this._renderScan();
-      return;
-    }
-    this._renderMain();
+    if (this._view === 'recipes') { this._renderRecipes(); return; }
+    if (this._view === 'scan') { this._renderScan(); return; }
+    this._detachWedgeListener();
+    this._renderMain(baseId);
   }
 
   // ---- Main view ----------------------------------------------------------
 
-  _renderMain() {
+  _renderMain(baseId) {
     const hass = this._hass;
-    const entityId = this._config.entity;
 
-    const totalItems = hass.states[entityId];
-    const expiringSoon = hass.states[entityId.replace('total_items', 'expiring_soon')];
-    const savings = hass.states[entityId.replace('total_items', 'savings')];
-    const shoppingList = hass.states[entityId.replace('total_items', 'shopping_list')];
-    const weeklyBudget = hass.states[entityId.replace('total_items', 'weekly_budget')];
+    const totalItems = hass.states[baseId];
+    const expiringSoon = this._sibling(baseId, ['expiring_soon']);
+    const savings = this._sibling(baseId, ['savings']);
+    const shoppingList = this._sibling(baseId, ['shopping_list']);
+    const weeklyBudget = this._sibling(baseId, ['weekly_budget']);
+    const suggestions = this._sibling(baseId, ['shopping_suggestions', 'suggestions']);
 
     const expiringItems = (expiringSoon && expiringSoon.attributes && expiringSoon.attributes.items) || [];
     const shoppingItems = (shoppingList && shoppingList.attributes && shoppingList.attributes.items) || [];
     const pantryCategories = (totalItems && totalItems.attributes && totalItems.attributes.categories) || {};
-    const threshold = this._config.low_stock_threshold;
-    const allItems = (totalItems && totalItems.attributes && totalItems.attributes.all_items) || [];
-    // Filter by card config threshold; fall back to backend pre-filtered list if all_items not yet available.
-    const lowStockItems = allItems.length > 0
-      ? allItems.filter((i) => i.quantity <= threshold)
-      : (totalItems && totalItems.attributes && totalItems.attributes.low_stock_items) || [];
+    const lowStockItems = (totalItems && totalItems.attributes && totalItems.attributes.low_stock_items) || [];
+    const suggestionItems = (suggestions && suggestions.attributes && suggestions.attributes.suggestions) || [];
 
     let html = this._styles() + '<div class="sp-container">';
 
@@ -227,20 +267,31 @@ class SmartPantryCard extends HTMLElement {
       this._escape((weeklyBudget && weeklyBudget.attributes && weeklyBudget.attributes.currency) || 'USD') + '</div>' +
       '<div class="sp-progress"><div class="sp-progress-fill ' + (budgetPct > 80 ? 'danger' : budgetPct > 60 ? 'warning' : '') + '" style="width:' + budgetPct + '%"></div></div></div>';
 
-    // Low stock
-    if (lowStockItems.length > 0) {
-      html += '<div class="sp-section"><div class="sp-section-title">🔴 Low Stock</div><div class="sp-item-list">';
-      lowStockItems.forEach((item, idx) => {
-        html += '<div class="sp-item"><div class="sp-item-left"><span class="sp-item-icon">🔴</span><div>' +
-          '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
-          '<div class="sp-item-meta">' + this._escape(item.quantity) + ' ' + this._escape(item.unit || '') + '</div>' +
-          '</div></div>' +
-          '<button class="sp-btn-mini" data-lowstock="' + idx + '">Restock</button></div>';
-      });
-      html += '</div></div>';
+    // Shopping suggestions (low stock + expiring, deduped by backend)
+    html += '<div class="sp-section"><div class="sp-section-title">💡 Suggested for Shopping List';
+    if (suggestionItems.length > 0) {
+      html += ' <span class="sp-badge orange">' + suggestionItems.length + '</span>';
     }
+    html += '</div>';
+    if (suggestionItems.length === 0) {
+      html += '<div class="sp-empty">Nothing to suggest — pantry looks good ✅</div>';
+    } else {
+      html += '<div class="sp-item-list">';
+      suggestionItems.slice(0, 8).forEach((item, idx) => {
+        const reasonIcon = item.reason === 'expiring' ? '⏰'
+          : item.reason === 'low_stock' ? '🔴' : '⚠️';
+        html += '<div class="sp-item"><div class="sp-item-left"><span class="sp-item-icon">' + reasonIcon + '</span><div>' +
+          '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
+          '<div class="sp-item-meta">' + this._escape(item.detail || item.reason || '') + '</div>' +
+          '</div></div>' +
+          '<button class="sp-btn-mini" data-suggest="' + idx + '">🛒 Add</button></div>';
+      });
+      html += '</div>';
+      html += '<button class="sp-btn sp-btn-primary" id="btn-add-all-suggestions" style="margin-top:8px;width:100%;">🛒 Add all to Shopping List</button>';
+    }
+    html += '</div>';
 
-    // Expiring
+    // Expiring detail list
     html += '<div class="sp-section"><div class="sp-section-title">⏰ Expiring Soon</div>';
     if (expiringItems.length === 0) {
       html += '<div class="sp-empty">No items expiring soon 🎉</div>';
@@ -301,7 +352,6 @@ class SmartPantryCard extends HTMLElement {
     html += '</div>';
     this.content.innerHTML = html;
 
-    // Re-attach handlers — innerHTML assignment drops all prior listeners.
     const recipesBtn = this.content.querySelector('#btn-recipes');
     if (recipesBtn) {
       recipesBtn.onclick = () => {
@@ -326,15 +376,27 @@ class SmartPantryCard extends HTMLElement {
       };
     }
 
-    // Low stock restock buttons.
-    this.content.querySelectorAll('[data-lowstock]').forEach((btn) => {
+    // Individual suggestion add buttons.
+    this.content.querySelectorAll('[data-suggest]').forEach((btn) => {
       btn.onclick = () => {
-        const item = lowStockItems[parseInt(btn.getAttribute('data-lowstock'), 10)];
+        const item = suggestionItems[parseInt(btn.getAttribute('data-suggest'), 10)];
         if (item) {
           this._addToLists(item.name, 1, item.unit || 'piece');
+          btn.textContent = '✓ Added';
+          btn.disabled = true;
         }
       };
     });
+
+    // Add all suggestions via the backend service (also syncs to HA list).
+    const addAllBtn = this.content.querySelector('#btn-add-all-suggestions');
+    if (addAllBtn) {
+      addAllBtn.onclick = () => {
+        hass.callService('smart_pantry', 'sync_suggestions_to_shopping_list', {});
+        addAllBtn.textContent = '✓ All added to Shopping List';
+        addAllBtn.disabled = true;
+      };
+    }
 
     // Expiring add-to-list buttons.
     this.content.querySelectorAll('[data-expiring]').forEach((btn) => {
@@ -342,6 +404,8 @@ class SmartPantryCard extends HTMLElement {
         const item = expiringItems[parseInt(btn.getAttribute('data-expiring'), 10)];
         if (item) {
           this._addToLists(item.name, 1, item.unit || 'piece');
+          btn.textContent = '✓ Added';
+          btn.disabled = true;
         }
       };
     });
@@ -360,7 +424,6 @@ class SmartPantryCard extends HTMLElement {
       html += '</div>';
       this.content.innerHTML = html;
       this._wireBack();
-      // Re-request recipes; the subscribed event will re-render when they arrive.
       hass.callService('smart_pantry', 'get_recipes', { recipe_count: 8 });
       return;
     }
@@ -382,13 +445,13 @@ class SmartPantryCard extends HTMLElement {
         (cookTime ? '<span class="sp-badge orange">⏱ ' + this._escape(cookTime) + '</span>' : '') +
         '</div>';
 
-      html += '<div style="font-size:12px;color:var(--secondary-text-color);margin-top:4px;">' + pct + '% match</div>';
+      html += '<div style="font-size:12px;color:var(--secondary-text-color);margin-top:4px;">' + pct + '% match — you have ' + matched.length + ' of ' + (recipe.total_ingredients || total) + ' ingredients</div>';
       html += '<div class="sp-match-bar" style="background:' + barColor + ';width:' + pct + '%;"></div>';
 
       if (matched.length > 0) {
         html += '<div style="margin-top:6px;">';
         matched.forEach((ing) => {
-          html += '<span class="sp-chip green">' + this._escape(this._ingredientName(ing)) + '</span>';
+          html += '<span class="sp-chip green">✓ ' + this._escape(this._ingredientName(ing)) + '</span>';
         });
         html += '</div>';
       }
@@ -399,8 +462,11 @@ class SmartPantryCard extends HTMLElement {
           html += '<span class="sp-chip gray">' + this._escape(this._ingredientName(ing)) + '</span>';
         });
         html += '</div>';
-        html += '<button class="sp-btn-mini" style="margin-top:10px;" data-recipe-missing="' + idx + '">Add missing to list</button>';
+        html += '<button class="sp-btn-mini" style="margin-top:10px;" data-recipe-missing="' + idx + '">🛒 Add ' + missing.length + ' missing to list</button>';
         html += '<span class="sp-added-marker" data-added-marker="' + idx + '" style="display:none;font-size:12px;color:#2E7D32;margin-left:8px;">✓ Added!</span>';
+      } else {
+        html += '<div style="margin-top:8px;font-size:12px;color:#2E7D32;font-weight:600;">🎉 You have everything — cook it now!</div>';
+        html += '<button class="sp-btn-mini" style="margin-top:6px;" data-recipe-cook="' + idx + '">👨‍🍳 Mark cooked (consume)</button>';
       }
 
       html += '</div>';
@@ -415,19 +481,29 @@ class SmartPantryCard extends HTMLElement {
       btn.onclick = () => {
         const idx = parseInt(btn.getAttribute('data-recipe-missing'), 10);
         const recipe = this._recipes[idx];
-        if (!recipe) {
-          return;
-        }
-        const missing = recipe.missing_ingredients || [];
-        missing.forEach((ing) => {
-          const name = this._ingredientName(ing);
-          hass.callService('smart_pantry', 'add_to_shopping_list', { item_name: name, quantity: 1, unit: 'piece' });
-          hass.callService('shopping_list', 'add_item', { name: name });
+        if (!recipe) return;
+        // Use the dedicated backend service so both lists stay in sync.
+        hass.callService('smart_pantry', 'add_recipe_missing_to_shopping_list', {
+          recipe_name: recipe.name,
         });
         const marker = this.content.querySelector('[data-added-marker="' + idx + '"]');
-        if (marker) {
-          marker.style.display = 'inline';
-        }
+        if (marker) marker.style.display = 'inline';
+        btn.disabled = true;
+      };
+    });
+
+    this.content.querySelectorAll('[data-recipe-cook]').forEach((btn) => {
+      btn.onclick = () => {
+        const idx = parseInt(btn.getAttribute('data-recipe-cook'), 10);
+        const recipe = this._recipes[idx];
+        if (!recipe) return;
+        const matched = recipe.matched_ingredients || [];
+        matched.forEach((ing) => {
+          hass.callService('smart_pantry', 'mark_consumed', {
+            item_name: this._ingredientName(ing), quantity: 1,
+          });
+        });
+        btn.textContent = '✓ Enjoy your meal!';
         btn.disabled = true;
       };
     });
@@ -443,33 +519,45 @@ class SmartPantryCard extends HTMLElement {
 
     // Scanner / manual entry
     html += '<div class="sp-section">' +
-      '<div class="sp-section-title">Scanner / Manual Entry</div>' +
-      '<div style="font-size:12px;color:var(--secondary-text-color);margin-bottom:6px;">Scan or type barcode:</div>' +
+      '<div class="sp-section-title">🔌 Scanner / Manual Entry</div>' +
+      '<div style="font-size:12px;color:var(--secondary-text-color);margin-bottom:6px;">' +
+      'Bluetooth/USB scanners work like keyboards — just scan while this view is open. ' +
+      'You can also type a barcode manually:</div>' +
       '<input type="text" id="sp-barcode-input" class="sp-input" placeholder="Scan with BT/USB or type here…" autofocus>' +
       '<button class="sp-btn sp-btn-primary" id="sp-barcode-submit" style="margin-top:10px;">Submit</button>' +
       '</div>';
 
     // Camera section
-    html += '<div class="sp-section"><div class="sp-section-title">Camera (HTTPS only)</div>';
+    html += '<div class="sp-section"><div class="sp-section-title">📱 Mobile Camera</div>';
     if (location.protocol !== 'https:') {
-      html += '<div class="sp-warning">⚠️ Camera requires HTTPS. Use scanner input above.</div>';
+      html += '<div class="sp-warning">⚠️ Camera scanning requires HTTPS (e.g. Nabu Casa remote URL or a reverse proxy). Use the scanner input above on HTTP.</div>';
     } else {
-      html += '<button class="sp-btn sp-btn-secondary" id="sp-use-camera">Use Camera</button>';
+      html += '<button class="sp-btn sp-btn-secondary" id="sp-use-camera">📷 Use Camera</button>';
     }
     html += '</div>';
 
     // Last scan result
     if (this._lastScan) {
       const s = this._lastScan;
-      html += '<div class="sp-section"><div class="sp-section-title">Last Scan</div>' +
+      const suggest = s.suggest_shopping_list === true || s.low_stock === true || s.expiring === true;
+      html += '<div class="sp-section"><div class="sp-section-title">✅ Last Scan</div>' +
         '<div class="sp-recipe-card">' +
-        '<div class="sp-item-name" style="font-size:15px;">' + this._escape(s.name || s.item_name || 'Unknown item') + '</div>' +
+        '<div class="sp-item-name" style="font-size:15px;">' + this._escape(s.item_name || s.name || 'Unknown item') + '</div>' +
         '<div class="sp-item-meta" style="margin-top:4px;">' +
-        'Qty: ' + this._escape(s.quantity != null ? s.quantity : '—') +
-        (s.expiry || s.expiry_date ? ' • Expires: ' + this._escape(s.expiry || s.expiry_date) : '') +
-        '</div>' +
-        (s.low_stock === true ? '<div class="sp-warning" style="margin-top:8px;">⚠️ Low stock — added to shopping list suggestion</div>' : '') +
-        '</div></div>';
+        'Qty: ' + this._escape(s.quantity != null ? s.quantity : '—') + ' ' + this._escape(s.unit || '') +
+        (s.expiration_date ? ' • Expires: ' + this._escape(s.expiration_date) : '') +
+        (s.source === 'openfoodfacts' ? ' • via Open Food Facts' : '') +
+        '</div>';
+      if (s.auto_added === true) {
+        html += '<div class="sp-suggest" style="margin-top:8px;"><span>🛒 Automatically added to your Shopping List</span></div>';
+      } else if (suggest) {
+        const reason = s.expiring ? 'expiring soon' : 'low in stock';
+        html += '<div class="sp-suggest" style="margin-top:8px;">' +
+          '<span>⚠️ This item is ' + reason + '. Add to Shopping List?</span>' +
+          '<button class="sp-btn-mini" id="sp-scan-add">🛒 Add</button>' +
+          '</div>';
+      }
+      html += '</div></div>';
     }
 
     html += '</div>';
@@ -481,20 +569,14 @@ class SmartPantryCard extends HTMLElement {
     const submit = this.content.querySelector('#sp-barcode-submit');
 
     const submitBarcode = () => {
-      if (!input) {
-        return;
-      }
+      if (!input) return;
       const value = input.value.trim();
-      if (value.length === 0) {
-        return;
-      }
+      if (value.length === 0) return;
       hass.callService('smart_pantry', 'scan_barcode', { barcode: value });
       input.value = '';
     };
 
-    if (submit) {
-      submit.onclick = submitBarcode;
-    }
+    if (submit) submit.onclick = submitBarcode;
     if (input) {
       input.onkeydown = (ev) => {
         if (ev.key === 'Enter') {
@@ -502,28 +584,73 @@ class SmartPantryCard extends HTMLElement {
           submitBarcode();
         }
       };
-      // Focus after the DOM settles so autofocus works reliably in Lovelace.
       setTimeout(() => { try { input.focus(); } catch (err) { /* not focusable yet */ } }, 0);
     }
 
+    // Global keyboard-wedge capture: BT/USB scanners type very fast and end
+    // with Enter. Capture even when the input is not focused.
+    this._attachWedgeListener(input);
+
     const useCamera = this.content.querySelector('#sp-use-camera');
     if (useCamera) {
-      useCamera.onclick = () => {
-        this._openCamera();
+      useCamera.onclick = () => { this._openCamera(); };
+    }
+
+    const scanAdd = this.content.querySelector('#sp-scan-add');
+    if (scanAdd && this._lastScan) {
+      scanAdd.onclick = () => {
+        const s = this._lastScan;
+        this._addToLists(s.item_name || s.name, 1, s.unit || 'piece');
+        scanAdd.textContent = '✓ Added';
+        scanAdd.disabled = true;
       };
     }
+  }
+
+  // ---- Keyboard-wedge (BT/USB scanner) capture ------------------------------
+
+  _attachWedgeListener(inputEl) {
+    this._detachWedgeListener();
+    const hass = this._hass;
+    this._wedgeListener = (ev) => {
+      // Ignore when user is typing in the manual input (it has its own handler).
+      if (document.activeElement === inputEl) return;
+      if (ev.key === 'Enter') {
+        if (this._wedgeBuffer.length >= 6) {
+          const code = this._wedgeBuffer;
+          this._wedgeBuffer = '';
+          hass.callService('smart_pantry', 'scan_barcode', { barcode: code });
+          ev.preventDefault();
+        } else {
+          this._wedgeBuffer = '';
+        }
+        return;
+      }
+      if (ev.key && ev.key.length === 1 && /[0-9A-Za-z\-]/.test(ev.key)) {
+        this._wedgeBuffer += ev.key;
+        // Scanners type in bursts; a human pause resets the buffer.
+        clearTimeout(this._wedgeTimer);
+        this._wedgeTimer = setTimeout(() => { this._wedgeBuffer = ''; }, 250);
+      }
+    };
+    window.addEventListener('keydown', this._wedgeListener, true);
+  }
+
+  _detachWedgeListener() {
+    if (this._wedgeListener) {
+      window.removeEventListener('keydown', this._wedgeListener, true);
+      this._wedgeListener = null;
+    }
+    clearTimeout(this._wedgeTimer);
+    this._wedgeBuffer = '';
   }
 
   // ---- Camera -------------------------------------------------------------
 
   _openCamera() {
-    if (this._cameraActive) {
-      return;
-    }
+    if (this._cameraActive) return;
     this._cameraActive = true;
 
-    // The modal overlays the whole viewport, so it must live on document.body,
-    // not inside this.content.
     const modal = document.createElement('div');
     modal.className = 'sp-camera-modal';
     modal.innerHTML = this._styles() +
@@ -545,13 +672,8 @@ class SmartPantryCard extends HTMLElement {
 
     this._loadZXing()
       .then(() => {
-        if (!this._cameraActive) {
-          // User stopped the camera while the library was loading.
-          return;
-        }
-        if (statusEl) {
-          statusEl.textContent = 'Scanning…';
-        }
+        if (!this._cameraActive) return;
+        if (statusEl) statusEl.textContent = 'Point the camera at a barcode…';
         this._codeReader = new window.ZXing.BrowserMultiFormatReader();
         this._codeReader.decodeFromVideoDevice(undefined, videoEl, (result, err) => {
           if (result) {
@@ -559,17 +681,12 @@ class SmartPantryCard extends HTMLElement {
             hass.callService('smart_pantry', 'scan_barcode', { barcode: barcode });
             this._stopCamera();
           } else if (err && err.name && err.name !== 'NotFoundException') {
-            // NotFoundException fires continuously between frames — ignore it.
-            if (statusEl) {
-              statusEl.textContent = 'Camera error: ' + err.message;
-            }
+            if (statusEl) statusEl.textContent = 'Camera error: ' + err.message;
           }
         });
       })
       .catch((err) => {
-        if (statusEl) {
-          statusEl.textContent = 'Camera error: ' + err.message;
-        }
+        if (statusEl) statusEl.textContent = 'Camera error: ' + err.message;
       });
   }
 
@@ -599,10 +716,7 @@ class SmartPantryCard extends HTMLElement {
 
   _loadZXing() {
     return new Promise((resolve, reject) => {
-      if (window.ZXing) {
-        resolve();
-        return;
-      }
+      if (window.ZXing) { resolve(); return; }
       const s = document.createElement('script');
       s.src = 'https://unpkg.com/@zxing/library@0.19.2/umd/index.min.js';
       s.onload = resolve;
@@ -614,9 +728,11 @@ class SmartPantryCard extends HTMLElement {
   // ---- Helpers ------------------------------------------------------------
 
   _addToLists(name, quantity, unit) {
-    const hass = this._hass;
-    hass.callService('smart_pantry', 'add_to_shopping_list', { item_name: name, quantity: quantity, unit: unit });
-    hass.callService('shopping_list', 'add_item', { name: name });
+    // The backend service also syncs into HA's default shopping_list,
+    // so a single call keeps both lists consistent (no duplicates).
+    this._hass.callService('smart_pantry', 'add_to_shopping_list', {
+      item_name: name, quantity: quantity, unit: unit,
+    });
   }
 
   _wireBack() {
@@ -630,20 +746,13 @@ class SmartPantryCard extends HTMLElement {
   }
 
   _ingredientName(ing) {
-    // Ingredients may arrive as plain strings or as objects with a name field.
-    if (ing == null) {
-      return '';
-    }
-    if (typeof ing === 'string') {
-      return ing;
-    }
+    if (ing == null) return '';
+    if (typeof ing === 'string') return ing;
     return ing.name || ing.ingredient || String(ing);
   }
 
   _escape(value) {
-    if (value == null) {
-      return '';
-    }
+    if (value == null) return '';
     return String(value)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -665,5 +774,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'smart-pantry-card',
   name: 'Smart Pantry Card',
-  description: 'Interactive dashboard for Smart Pantry Scanner',
+  description: 'Interactive dashboard for Smart Pantry Scanner with suggestions, recipes and barcode scanning',
 });

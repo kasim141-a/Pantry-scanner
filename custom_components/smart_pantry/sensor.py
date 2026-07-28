@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DOMAIN, ENTITY_TOTAL_ITEMS, ENTITY_EXPIRING_SOON, ENTITY_EXPIRED,
     ENTITY_WASTE_PREVENTED, ENTITY_SAVINGS, ENTITY_SHOPPING_LIST_COUNT, ENTITY_WEEKLY_BUDGET_STATUS,
+    ENTITY_SUGGESTIONS,
     CONF_HOUSEHOLD_NAME, CONF_CURRENCY, CONF_WEEKLY_BUDGET,
     DEFAULT_HOUSEHOLD_NAME, DEFAULT_CURRENCY, DEFAULT_WEEKLY_BUDGET,
 )
@@ -32,6 +33,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry,
         PantrySavingsSensor(coordinator, entry, household_name),
         PantryShoppingListCountSensor(coordinator, entry, household_name),
         PantryWeeklyBudgetSensor(coordinator, entry, household_name),
+        PantrySuggestionsSensor(coordinator, entry, household_name),
     ]
     async_add_entities(entities)
 
@@ -86,23 +88,11 @@ class PantryTotalItemsSensor(SmartPantryBaseSensor):
             loc = item.get("storage_location", "other")
             categories[cat] = categories.get(cat, 0) + 1
             locations[loc] = locations.get(loc, 0) + 1
-        all_items = [
-            {
-                "name": i["name"],
-                "quantity": i.get("quantity", 0),
-                "unit": i.get("unit", "piece"),
-                "category": i.get("category", "other"),
-                "expiration_date": i.get("expiration_date"),
-                "storage_location": i.get("storage_location"),
-            }
-            for i in pantry.values()
-        ]
         return {
             "categories": categories,
             "locations": locations,
             "last_updated": datetime.now().isoformat(),
             "low_stock_items": self.coordinator.get_low_stock_items(),
-            "all_items": all_items,
         }
 
 
@@ -205,6 +195,31 @@ class PantryShoppingListCountSensor(SmartPantryBaseSensor):
             "total_items": len(items),
             "estimated_cost": round(len(items) * 3.5, 2),
         }
+
+
+class PantrySuggestionsSensor(SmartPantryBaseSensor):
+    """Suggested shopping list additions from low stock and expiring items."""
+
+    def __init__(self, coordinator, entry, household_name):
+        super().__init__(coordinator, entry, household_name, ENTITY_SUGGESTIONS, "Shopping Suggestions", "mdi:cart-plus")
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.get_suggestions())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        suggestions = self.coordinator.get_suggestions()
+        return {
+            "suggestions": suggestions,
+            "low_stock_threshold": self.coordinator.low_stock_threshold,
+            "expiry_warning_days": self.coordinator.expiry_warning_days,
+            "auto_add_to_ha_shopping_list": self.coordinator.auto_add_to_ha_list,
+        }
+
+    @property
+    def icon(self) -> str:
+        return "mdi:cart-plus" if self.native_value > 0 else "mdi:cart-check"
 
 
 class PantryWeeklyBudgetSensor(SmartPantryBaseSensor):

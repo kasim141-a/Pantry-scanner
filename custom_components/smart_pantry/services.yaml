@@ -320,3 +320,19 @@ mark_consumed:
           max: 999
           step: 0.1
           mode: box
+
+sync_suggestions_to_shopping_list:
+  name: Sync Suggestions to Shopping List
+  description: Add all current suggestions (low stock and expiring items) to the pantry shopping list and Home Assistant's default Shopping List.
+
+add_recipe_missing_to_shopping_list:
+  name: Add Recipe Missing Ingredients
+  description: Add all missing ingredients of a recipe to the shopping lists.
+  fields:
+    recipe_name:
+      name: Recipe Name
+      description: Name of the recipe whose missing ingredients should be added.
+      required: true
+      example: "Vegetable Stir Fry"
+      selector:
+        text:
