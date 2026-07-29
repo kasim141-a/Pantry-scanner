@@ -1,11 +1,11 @@
-// Smart Pantry Card v1.3.0
+// Smart Pantry Card v1.3.1
 // Views: main (dashboard + suggestions), inventory (browse/edit items), recipes, scan.
 // - Auto-discovers Smart Pantry entities (no exact entity id needed).
 // - Shopping suggestions for low-stock and expiring items with one-tap add.
 // - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
 // - Syncs additions to Home Assistant's default Shopping List.
 
-const SMART_PANTRY_CARD_VERSION = '1.3.0';
+const SMART_PANTRY_CARD_VERSION = '1.3.1';
 
 class SmartPantryCard extends HTMLElement {
   constructor() {
@@ -775,13 +775,19 @@ class SmartPantryCard extends HTMLElement {
     // Camera section
     html += '<div class="sp-section"><div class="sp-section-title">📱 Mobile Camera</div>';
     const canUseCamera = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-      html += '<div class="sp-warning">⚠️ Camera scanning requires HTTPS (e.g. Nabu Casa remote URL or a reverse proxy). Use the scanner input above on HTTP.</div>';
-    } else if (!canUseCamera) {
-      html += '<div class="sp-warning">⚠️ This browser/app does not expose the camera API. In the HA Companion App, make sure the app has Camera permission (Android: Settings → Apps → Home Assistant → Permissions → Camera; iOS: Settings → Home Assistant → Camera) and update the app to the latest version.</div>';
+    const isSecure = (location.protocol === 'https:' || location.hostname === 'localhost');
+    if (canUseCamera && isSecure) {
+      html += '<button class="sp-btn sp-btn-secondary" id="sp-use-camera">📷 Live Scan</button>';
+    } else if (!isSecure) {
+      html += '<div class="sp-warning">⚠️ Live camera scanning needs an <b>https://</b> connection (yours is ' + this._escape(location.protocol + '//' + location.hostname) + '). Switch the Companion App server URL to your HTTPS/Nabu Casa address to enable it — or use 📸 Take Photo below, which works on any connection.</div>';
     } else {
-      html += '<button class="sp-btn sp-btn-secondary" id="sp-use-camera">📷 Use Camera</button>';
+      html += '<div class="sp-warning">⚠️ This app/browser does not expose the live camera API. Use 📸 Take Photo below — it opens your phone\'s native camera instead and works everywhere.</div>';
     }
+    // Photo-capture fallback: uses the native camera app via a file input,
+    // works in every WebView/browser regardless of protocol or mediaDevices.
+    html += '<button class="sp-btn sp-btn-secondary" id="sp-photo-scan" style="margin-top:8px;">📸 Take Photo of Barcode</button>' +
+      '<input type="file" id="sp-photo-input" accept="image/*" capture="environment" style="display:none;">' +
+      '<div id="sp-photo-status" style="font-size:12px;color:var(--secondary-text-color);margin-top:6px;"></div>';
     html += '</div>';
 
     // Last scan result
@@ -842,6 +848,18 @@ class SmartPantryCard extends HTMLElement {
     const useCamera = this.content.querySelector('#sp-use-camera');
     if (useCamera) {
       useCamera.onclick = () => { this._openCamera(); };
+    }
+
+    // Photo-capture fallback wiring.
+    const photoBtn = this.content.querySelector('#sp-photo-scan');
+    const photoInput = this.content.querySelector('#sp-photo-input');
+    if (photoBtn && photoInput) {
+      photoBtn.onclick = () => { photoInput.click(); };
+      photoInput.onchange = () => {
+        const f = photoInput.files && photoInput.files[0];
+        if (f) this._decodePhoto(f);
+        photoInput.value = '';
+      };
     }
 
     const scanAdd = this.content.querySelector('#sp-scan-add');
@@ -1024,6 +1042,76 @@ class SmartPantryCard extends HTMLElement {
         this._cameraModal.parentNode.removeChild(this._cameraModal);
       }
       this._cameraModal = null;
+    }
+  }
+
+  /**
+   * Decode a barcode from a photo taken with the native camera app.
+   * Tries multiple scales and rotations because hand-held photos are rarely
+   * perfectly framed. Works without navigator.mediaDevices.
+   */
+  async _decodePhoto(file) {
+    const statusEl = this.content && this.content.querySelector('#sp-photo-status');
+    const setStatus = (msg) => { if (statusEl) statusEl.innerHTML = msg; };
+    try {
+      setStatus('⏳ Decoding photo…');
+      await this._loadZXing();
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('Could not read the photo')); img.src = url; });
+
+      const hints = new Map();
+      const Z = window.ZXing;
+      hints.set(Z.DecodeHintType.TRY_HARDER, true);
+      hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [
+        Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A,
+        Z.BarcodeFormat.UPC_E, Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39,
+        Z.BarcodeFormat.QR_CODE, Z.BarcodeFormat.ITF, Z.BarcodeFormat.CODABAR,
+      ]);
+      const mfReader = new Z.MultiFormatReader();
+      mfReader.setHints(hints);
+
+      const tryDecode = (canvas) => {
+        try {
+          const source = new Z.HTMLCanvasElementLuminanceSource(canvas);
+          const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(source));
+          const result = mfReader.decode(bitmap);
+          return result ? result.getText() : null;
+        } catch (e) { return null; }
+      };
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      let text = null;
+      // Try a few sizes (large first for small barcodes, then downscaled for blur)
+      // and 4 rotations each.
+      const widths = [Math.min(img.naturalWidth, 1600), 1024, 640];
+      outer: for (const w of widths) {
+        const scale = w / img.naturalWidth;
+        const h = Math.round(img.naturalHeight * scale);
+        for (const deg of [0, 90, 180, 270]) {
+          const rot = (deg % 180 !== 0);
+          canvas.width = rot ? h : w;
+          canvas.height = rot ? w : h;
+          ctx.save();
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.rotate((deg * Math.PI) / 180);
+          ctx.drawImage(img, -w / 2, -h / 2, w, h);
+          ctx.restore();
+          text = tryDecode(canvas);
+          if (text) break outer;
+        }
+      }
+      URL.revokeObjectURL(url);
+
+      if (text) {
+        setStatus('✅ Barcode found: <b>' + this._escape(text) + '</b> — adding…');
+        this._hass.callService('smart_pantry', 'scan_barcode', this._scanPayload(text));
+      } else {
+        setStatus('❌ No barcode found in the photo. Hold the phone closer (fill the frame with the barcode), keep it flat and well lit, then try again.');
+      }
+    } catch (err) {
+      setStatus('❌ ' + this._escape((err && err.message) || String(err)));
     }
   }
 

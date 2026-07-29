@@ -84,15 +84,16 @@ entity: sensor.smart_pantry_scanner_smart_pantry_my_home_total_items
 
 **🍳 Recipes** scores recipes against your pantry, shows matched (green) and missing (grey) ingredients, and lets you add all missing ingredients of a recipe to the shopping list in one tap — this uses the `smart_pantry.add_recipe_missing_to_shopping_list` service so both the pantry list and HA's Shopping List stay in sync. Recipes you can fully cook offer a **Mark cooked** button that consumes the matched ingredients.
 
-**📷 Scan** supports three input methods:
+**📷 Scan** supports four input methods:
 
 1. **Bluetooth/USB scanner** — these behave as keyboards ("keyboard wedge"). Just scan while the Scan view is open; the card captures fast keystroke bursts ending in Enter even when the text field is not focused.
-2. **Mobile camera** — tap **Use Camera** (requires HTTPS, e.g. a Nabu Casa remote URL or a reverse proxy with TLS; the HA Companion app on an HTTPS URL works too).
-3. **Manual entry** — type the barcode and press Submit. Optional **Quantity** and **Price** fields next to the input apply to whichever scan method you use.
+2. **Mobile camera — Live Scan** — tap **📷 Live Scan** for continuous viewfinder scanning (requires HTTPS, e.g. a Nabu Casa remote URL or a reverse proxy with TLS; the HA Companion app on an HTTPS URL works too).
+3. **Mobile camera — Take Photo** — **new in 1.3.1:** tap **📸 Take Photo of Barcode** to open your phone's native camera app, snap a picture of the barcode, and the card decodes it locally (multiple scales and rotations are tried automatically). This works in **every** app and browser — including the Companion App over plain HTTP — because it does not need the WebView camera API.
+4. **Manual entry** — type the barcode and press Submit. Optional **Quantity** and **Price** fields next to the input apply to whichever scan method you use.
 
 ### Camera troubleshooting (Companion App)
 
-As of v1.3.0 the card requests the camera stream directly before starting the barcode decoder, so permission problems are reported on screen instead of hanging at "Point the camera at a barcode…". If you see a permission message: on **Android**, long-press the Home Assistant app icon → App info → Permissions → Camera → Allow; on **iOS**, go to Settings → Home Assistant and enable Camera; in a **browser**, tap the padlock icon in the address bar and allow camera access. Also note the camera only works over HTTPS — if you connect via `http://homeassistant.local:8123`, the WebView never exposes the camera API, so use your Nabu Casa or other HTTPS URL in the app's server settings.
+If **Live Scan** is unavailable, the card now tells you why: either the connection is not HTTPS (the WebView never exposes the live camera API over `http://` — the warning shows your current origin so you can check at a glance), or the app lacks Camera permission (Android: long-press the HA app icon → App info → Permissions → Camera → Allow; iOS: Settings → Home Assistant → Camera). In every such case, **📸 Take Photo of Barcode** still works: it delegates to the phone's native camera app, which needs no WebView camera API at all. To enable Live Scan in the Companion App, set the server URL (App Configuration → Servers) to your HTTPS/Nabu Casa address.
 
 After each scan the item is added to the pantry, and if it is low in stock or expiring, the card either prompts **Add to Shopping List?** or adds it automatically when the auto-add option is enabled.
 
