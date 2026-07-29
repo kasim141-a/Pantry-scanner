@@ -1,12 +1,12 @@
-/**
- * Smart Pantry Card v1.2.0
- *
- * Views: main (dashboard + suggestions), recipes, scan.
- * - Auto-discovers Smart Pantry entities (no exact entity id needed).
- * - Shopping suggestions for low-stock and expiring items with one-tap add.
- * - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
- * - Syncs additions to Home Assistant's default Shopping List.
- */
+// Smart Pantry Card v1.3.0
+// Views: main (dashboard + suggestions), inventory (browse/edit items), recipes, scan.
+// - Auto-discovers Smart Pantry entities (no exact entity id needed).
+// - Shopping suggestions for low-stock and expiring items with one-tap add.
+// - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
+// - Syncs additions to Home Assistant's default Shopping List.
+
+const SMART_PANTRY_CARD_VERSION = '1.3.0';
+
 class SmartPantryCard extends HTMLElement {
   constructor() {
     super();
@@ -23,6 +23,9 @@ class SmartPantryCard extends HTMLElement {
     this._wedgeBuffer = '';
     this._wedgeTimer = null;
     this._wedgeListener = null;
+    this._invSearch = '';      // inventory search text
+    this._invCategory = 'all'; // inventory category filter
+    this._invEditing = null;   // name of item being edited inline
   }
 
   static getConfigElement() {
@@ -205,6 +208,19 @@ class SmartPantryCard extends HTMLElement {
       '.sp-input { width: 100%; padding: 10px 14px; border: 1px solid var(--divider-color); border-radius: 10px; font-size: 14px; background: var(--card-background-color); color: var(--primary-text-color); box-sizing: border-box; }' +
       '.sp-warning { padding: 10px 14px; background: #FFF3E0; border-radius: 10px; color: #E65100; font-size: 13px; margin: 8px 0; }' +
       '.sp-suggest { padding: 10px 14px; background: #E3F2FD; border-radius: 10px; color: #1565C0; font-size: 13px; margin: 8px 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }' +
+      '.sp-filter-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }' +
+      '.sp-filter-chip { padding: 5px 10px; border-radius: 100px; font-size: 11px; cursor: pointer; border: 1px solid var(--divider-color, #e0e0e0); background: var(--card-background-color, #fff); color: var(--primary-text-color); }' +
+      '.sp-filter-chip.active { background: #2E7D32; color: white; border-color: #2E7D32; }' +
+      '.sp-inv-item { padding: 10px 12px; background: var(--card-background-color, #fff); border-radius: 10px; border: 1px solid var(--divider-color, #e0e0e0); font-size: 13px; margin-bottom: 6px; }' +
+      '.sp-inv-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }' +
+      '.sp-stepper { display: flex; align-items: center; gap: 6px; }' +
+      '.sp-step-btn { width: 30px; height: 30px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 16px; font-weight: 700; cursor: pointer; line-height: 1; }' +
+      '.sp-step-qty { min-width: 42px; text-align: center; font-weight: 700; font-size: 13px; }' +
+      '.sp-edit-form { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--divider-color, #e0e0e0); display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }' +
+      '.sp-edit-form label { font-size: 11px; color: var(--secondary-text-color); display: block; margin-bottom: 3px; }' +
+      '.sp-edit-full { grid-column: 1 / -1; }' +
+      '.sp-select { width: 100%; padding: 8px 10px; border: 1px solid var(--divider-color); border-radius: 8px; font-size: 13px; background: var(--card-background-color); color: var(--primary-text-color); box-sizing: border-box; }' +
+      '.sp-btn-danger { background: #E53935; color: white; }' +
       '</style>';
   }
 
@@ -227,6 +243,7 @@ class SmartPantryCard extends HTMLElement {
     if (this._view === 'recipes') { this._renderRecipes(); return; }
     if (this._view === 'scan') { this._renderScan(); return; }
     this._detachWedgeListener();
+    if (this._view === 'inventory') { this._renderInventory(baseId); return; }
     this._renderMain(baseId);
   }
 
@@ -342,8 +359,17 @@ class SmartPantryCard extends HTMLElement {
     }
     html += '</div>';
 
+    // Inventory value line (only when at least one item has a price)
+    const invValue = (totalItems && totalItems.attributes && totalItems.attributes.inventory_value) || 0;
+    const invCurrency = (totalItems && totalItems.attributes && totalItems.attributes.currency) || '';
+    if (invValue > 0) {
+      html += '<div class="sp-section" style="font-size:12px;color:var(--secondary-text-color);">' +
+        '💵 Stock value: <strong>' + this._escape(invValue) + ' ' + this._escape(invCurrency) + '</strong></div>';
+    }
+
     // Action buttons
     html += '<div class="sp-btn-row">' +
+      '<button class="sp-btn sp-btn-ghost" id="btn-inventory">📦 Inventory</button>' +
       '<button class="sp-btn sp-btn-primary" id="btn-recipes">🍳 Recipes</button>' +
       '<button class="sp-btn sp-btn-secondary" id="btn-scan">📷 Scan</button>' +
       '<button class="sp-btn sp-btn-ghost" id="btn-clear">🗑️ Clear</button>' +
@@ -351,6 +377,15 @@ class SmartPantryCard extends HTMLElement {
 
     html += '</div>';
     this.content.innerHTML = html;
+
+    const inventoryBtn = this.content.querySelector('#btn-inventory');
+    if (inventoryBtn) {
+      inventoryBtn.onclick = () => {
+        this._view = 'inventory';
+        this._invEditing = null;
+        this._renderCard();
+      };
+    }
 
     const recipesBtn = this.content.querySelector('#btn-recipes');
     if (recipesBtn) {
@@ -407,6 +442,210 @@ class SmartPantryCard extends HTMLElement {
           btn.textContent = '✓ Added';
           btn.disabled = true;
         }
+      };
+    });
+  }
+
+  // ---- Inventory view -------------------------------------------------------
+
+  _catIcons() {
+    return { produce: '🥬', dairy: '🥛', meat: '🍗', seafood: '🦐', bakery: '🍞', pantry: '🥫', frozen: '🧊', beverages: '🥤', condiments: '🧂', snacks: '🍿', other: '📦' };
+  }
+
+  _categories() {
+    return ['produce', 'dairy', 'meat', 'seafood', 'bakery', 'pantry', 'frozen', 'beverages', 'condiments', 'snacks', 'other'];
+  }
+
+  _units() {
+    return ['piece', 'g', 'kg', 'oz', 'lb', 'ml', 'l', 'cup', 'tbsp', 'tsp', 'bottle', 'can', 'box', 'bag', 'pack'];
+  }
+
+  _locations() {
+    return ['pantry', 'refrigerator', 'freezer', 'countertop', 'wine_cellar', 'other'];
+  }
+
+  _renderInventory(baseId) {
+    const hass = this._hass;
+    const totalItems = hass.states[baseId];
+    const attrs = (totalItems && totalItems.attributes) || {};
+    const inventory = attrs.inventory || [];
+    const currency = attrs.currency || '';
+    const icons = this._catIcons();
+
+    // Filter by search text and category.
+    const search = (this._invSearch || '').toLowerCase();
+    const filtered = inventory.filter((item) => {
+      if (this._invCategory !== 'all' && (item.category || 'other') !== this._invCategory) return false;
+      if (search && !(item.name || '').toLowerCase().includes(search)) return false;
+      return true;
+    });
+
+    // Category chips: 'all' plus only categories present in inventory.
+    const presentCats = Array.from(new Set(inventory.map((i) => i.category || 'other')));
+
+    let html = this._styles() + '<div class="sp-container">';
+    html += '<button class="sp-btn-back" id="sp-back">← Back</button>';
+    html += '<div class="sp-section-title">📦 Inventory (' + inventory.length + ' items' +
+      (attrs.inventory_value > 0 ? ' • ' + this._escape(attrs.inventory_value) + ' ' + this._escape(currency) : '') + ')</div>';
+
+    html += '<input type="text" id="sp-inv-search" class="sp-input" placeholder="🔍 Search items…" value="' + this._escape(this._invSearch) + '">';
+
+    html += '<div class="sp-filter-row">';
+    html += '<span class="sp-filter-chip ' + (this._invCategory === 'all' ? 'active' : '') + '" data-cat="all">All</span>';
+    presentCats.forEach((cat) => {
+      html += '<span class="sp-filter-chip ' + (this._invCategory === cat ? 'active' : '') + '" data-cat="' + this._escape(cat) + '">' +
+        (icons[cat] || '📦') + ' ' + this._escape(cat) + '</span>';
+    });
+    html += '</div>';
+
+    if (inventory.length === 0) {
+      html += '<div class="sp-empty">Your pantry is empty — scan or add items to get started.<br>' +
+        '<span style="font-size:11px;">(If you recently updated, restart Home Assistant so the integration exposes the new inventory attribute.)</span></div>';
+    } else if (filtered.length === 0) {
+      html += '<div class="sp-empty">No items match your filter.</div>';
+    }
+
+    filtered.forEach((item, idx) => {
+      const icon = icons[item.category] || '📦';
+      const days = item.days_until_expiry;
+      let expiryBadge = '';
+      if (days != null) {
+        const badgeClass = days < 0 ? 'red' : days <= 3 ? 'orange' : 'green';
+        const badgeText = days < 0 ? 'Expired' : days === 0 ? 'Today' : days + 'd';
+        expiryBadge = '<span class="sp-badge ' + badgeClass + '">' + this._escape(badgeText) + '</span>';
+      }
+      const priceText = item.price != null ? this._escape(Number(item.price).toFixed(2)) + ' ' + this._escape(currency) : '';
+      const isEditing = this._invEditing === item.name;
+
+      html += '<div class="sp-inv-item">';
+      html += '<div class="sp-inv-row">' +
+        '<div class="sp-item-left"><span class="sp-item-icon">' + icon + '</span><div>' +
+        '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
+        '<div class="sp-item-meta">' + this._escape(item.category || 'other') + ' • ' + this._escape(item.storage_location || 'pantry') +
+        (priceText ? ' • ' + priceText : '') +
+        (item.expiration_date ? ' • exp ' + this._escape(item.expiration_date) : '') +
+        '</div></div></div>' +
+        '<div style="display:flex;align-items:center;gap:8px;">' + expiryBadge +
+        '<div class="sp-stepper">' +
+        '<button class="sp-step-btn" data-dec="' + idx + '">−</button>' +
+        '<span class="sp-step-qty">' + this._escape(item.quantity) + '<br><span style="font-weight:400;font-size:10px;color:var(--secondary-text-color);">' + this._escape(item.unit || '') + '</span></span>' +
+        '<button class="sp-step-btn" data-inc="' + idx + '">+</button>' +
+        '</div>' +
+        '<button class="sp-btn-mini" data-edit="' + idx + '" style="background:var(--card-background-color,#fff);color:var(--primary-text-color);border:1px solid var(--divider-color,#e0e0e0);">' + (isEditing ? '✕' : '✏️') + '</button>' +
+        '</div></div>';
+
+      if (isEditing) {
+        html += '<div class="sp-edit-form">';
+        html += '<div><label>Quantity</label><input type="number" step="0.1" min="0" class="sp-select" data-f="quantity" value="' + this._escape(item.quantity) + '"></div>';
+        html += '<div><label>Unit</label><select class="sp-select" data-f="unit">' +
+          this._units().map((u) => '<option value="' + u + '"' + (u === item.unit ? ' selected' : '') + '>' + u + '</option>').join('') + '</select></div>';
+        html += '<div><label>Category</label><select class="sp-select" data-f="category">' +
+          this._categories().map((c) => '<option value="' + c + '"' + (c === item.category ? ' selected' : '') + '>' + c + '</option>').join('') + '</select></div>';
+        html += '<div><label>Location</label><select class="sp-select" data-f="storage_location">' +
+          this._locations().map((l) => '<option value="' + l + '"' + (l === item.storage_location ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></div>';
+        html += '<div><label>Price (' + this._escape(currency || 'per unit') + ')</label><input type="number" step="0.01" min="0" class="sp-select" data-f="price" value="' + (item.price != null ? this._escape(item.price) : '') + '" placeholder="—"></div>';
+        html += '<div><label>Expiry date</label><input type="date" class="sp-select" data-f="expiration_date" value="' + this._escape(item.expiration_date || '') + '"></div>';
+        html += '<div class="sp-edit-full" style="display:flex;gap:8px;">' +
+          '<button class="sp-btn sp-btn-primary" data-save="' + idx + '" style="flex:2;">💾 Save</button>' +
+          '<button class="sp-btn sp-btn-ghost" data-consume="' + idx + '" style="flex:1;">🍽️ Use 1</button>' +
+          '<button class="sp-btn sp-btn-danger" data-delete="' + idx + '" style="flex:1;">🗑️</button>' +
+          '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+
+    html += '</div>';
+    this.content.innerHTML = html;
+    this._wireBack();
+
+    // Search box (debounced re-render, keep focus).
+    const searchEl = this.content.querySelector('#sp-inv-search');
+    if (searchEl) {
+      searchEl.oninput = () => {
+        this._invSearch = searchEl.value;
+        clearTimeout(this._invSearchTimer);
+        this._invSearchTimer = setTimeout(() => {
+          const pos = searchEl.selectionStart;
+          this._renderCard();
+          const el = this.content.querySelector('#sp-inv-search');
+          if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) { /* ok */ } }
+        }, 250);
+      };
+    }
+
+    // Category chips.
+    this.content.querySelectorAll('[data-cat]').forEach((chip) => {
+      chip.onclick = () => {
+        this._invCategory = chip.getAttribute('data-cat');
+        this._renderCard();
+      };
+    });
+
+    // Quantity steppers.
+    this.content.querySelectorAll('[data-inc]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = filtered[parseInt(btn.getAttribute('data-inc'), 10)];
+        if (item) hass.callService('smart_pantry', 'update_item', { item_name: item.name, quantity: Math.round((Number(item.quantity) + 1) * 10) / 10 });
+      };
+    });
+    this.content.querySelectorAll('[data-dec]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = filtered[parseInt(btn.getAttribute('data-dec'), 10)];
+        if (!item) return;
+        const next = Math.round((Number(item.quantity) - 1) * 10) / 10;
+        if (next <= 0 && !window.confirm('Remove "' + item.name + '" from the pantry?')) return;
+        hass.callService('smart_pantry', 'update_item', { item_name: item.name, quantity: Math.max(0, next) });
+      };
+    });
+
+    // Edit toggles.
+    this.content.querySelectorAll('[data-edit]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = filtered[parseInt(btn.getAttribute('data-edit'), 10)];
+        if (!item) return;
+        this._invEditing = this._invEditing === item.name ? null : item.name;
+        this._renderCard();
+      };
+    });
+
+    // Save edited fields.
+    this.content.querySelectorAll('[data-save]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = filtered[parseInt(btn.getAttribute('data-save'), 10)];
+        if (!item) return;
+        const form = btn.closest('.sp-edit-form');
+        const payload = { item_name: item.name };
+        form.querySelectorAll('[data-f]').forEach((f) => {
+          const field = f.getAttribute('data-f');
+          const val = f.value;
+          if (val === '' || val == null) return;
+          if (field === 'quantity' || field === 'price') payload[field] = Number(val);
+          else payload[field] = val;
+        });
+        hass.callService('smart_pantry', 'update_item', payload);
+        this._invEditing = null;
+        this._renderCard();
+      };
+    });
+
+    // Consume one.
+    this.content.querySelectorAll('[data-consume]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = filtered[parseInt(btn.getAttribute('data-consume'), 10)];
+        if (item) hass.callService('smart_pantry', 'mark_consumed', { item_name: item.name, quantity: 1 });
+        this._invEditing = null;
+      };
+    });
+
+    // Delete item.
+    this.content.querySelectorAll('[data-delete]').forEach((btn) => {
+      btn.onclick = () => {
+        const item = filtered[parseInt(btn.getAttribute('data-delete'), 10)];
+        if (!item) return;
+        if (!window.confirm('Delete "' + item.name + '" from the pantry?')) return;
+        hass.callService('smart_pantry', 'remove_item', { item_name: item.name });
+        this._invEditing = null;
       };
     });
   }
@@ -524,13 +763,22 @@ class SmartPantryCard extends HTMLElement {
       'Bluetooth/USB scanners work like keyboards — just scan while this view is open. ' +
       'You can also type a barcode manually:</div>' +
       '<input type="text" id="sp-barcode-input" class="sp-input" placeholder="Scan with BT/USB or type here…" autofocus>' +
+      '<div style="display:flex;gap:8px;margin-top:8px;">' +
+      '<div style="flex:1;"><label style="font-size:11px;color:var(--secondary-text-color);">Quantity</label>' +
+      '<input type="number" id="sp-scan-qty" class="sp-input" min="1" step="1" value="1"></div>' +
+      '<div style="flex:1;"><label style="font-size:11px;color:var(--secondary-text-color);">Price (optional)</label>' +
+      '<input type="number" id="sp-scan-price" class="sp-input" min="0" step="0.01" placeholder="—"></div>' +
+      '</div>' +
       '<button class="sp-btn sp-btn-primary" id="sp-barcode-submit" style="margin-top:10px;">Submit</button>' +
       '</div>';
 
     // Camera section
     html += '<div class="sp-section"><div class="sp-section-title">📱 Mobile Camera</div>';
-    if (location.protocol !== 'https:') {
+    const canUseCamera = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
       html += '<div class="sp-warning">⚠️ Camera scanning requires HTTPS (e.g. Nabu Casa remote URL or a reverse proxy). Use the scanner input above on HTTP.</div>';
+    } else if (!canUseCamera) {
+      html += '<div class="sp-warning">⚠️ This browser/app does not expose the camera API. In the HA Companion App, make sure the app has Camera permission (Android: Settings → Apps → Home Assistant → Permissions → Camera; iOS: Settings → Home Assistant → Camera) and update the app to the latest version.</div>';
     } else {
       html += '<button class="sp-btn sp-btn-secondary" id="sp-use-camera">📷 Use Camera</button>';
     }
@@ -572,7 +820,7 @@ class SmartPantryCard extends HTMLElement {
       if (!input) return;
       const value = input.value.trim();
       if (value.length === 0) return;
-      hass.callService('smart_pantry', 'scan_barcode', { barcode: value });
+      hass.callService('smart_pantry', 'scan_barcode', this._scanPayload(value));
       input.value = '';
     };
 
@@ -619,7 +867,7 @@ class SmartPantryCard extends HTMLElement {
         if (this._wedgeBuffer.length >= 6) {
           const code = this._wedgeBuffer;
           this._wedgeBuffer = '';
-          hass.callService('smart_pantry', 'scan_barcode', { barcode: code });
+          hass.callService('smart_pantry', 'scan_barcode', this._scanPayload(code));
           ev.preventDefault();
         } else {
           this._wedgeBuffer = '';
@@ -654,8 +902,8 @@ class SmartPantryCard extends HTMLElement {
     const modal = document.createElement('div');
     modal.className = 'sp-camera-modal';
     modal.innerHTML = this._styles() +
-      '<video id="sp-camera-video" autoplay playsinline style="width:100%;max-width:480px;border-radius:8px;"></video>' +
-      '<div id="sp-camera-status" style="color:white;margin-top:12px;font-size:14px;">Loading scanner…</div>' +
+      '<video id="sp-camera-video" autoplay muted playsinline style="width:100%;max-width:480px;border-radius:8px;background:#000;min-height:200px;"></video>' +
+      '<div id="sp-camera-status" style="color:white;margin-top:12px;font-size:14px;text-align:center;max-width:480px;">Requesting camera access…</div>' +
       '<button class="sp-btn sp-btn-ghost" id="sp-stop-camera" style="margin-top:16px;max-width:200px;">Stop Camera</button>';
     document.body.appendChild(modal);
     this._cameraModal = modal;
@@ -669,25 +917,85 @@ class SmartPantryCard extends HTMLElement {
     }
 
     const hass = this._hass;
+    const setStatus = (msg) => { if (statusEl) statusEl.innerHTML = msg; };
 
-    this._loadZXing()
-      .then(() => {
-        if (!this._cameraActive) return;
-        if (statusEl) statusEl.textContent = 'Point the camera at a barcode…';
-        this._codeReader = new window.ZXing.BrowserMultiFormatReader();
-        this._codeReader.decodeFromVideoDevice(undefined, videoEl, (result, err) => {
-          if (result) {
-            const barcode = result.getText();
-            hass.callService('smart_pantry', 'scan_barcode', { barcode: barcode });
-            this._stopCamera();
-          } else if (err && err.name && err.name !== 'NotFoundException') {
-            if (statusEl) statusEl.textContent = 'Camera error: ' + err.message;
-          }
+    // WebView-safe flow: acquire the camera stream explicitly FIRST so
+    // permission errors surface immediately (the HA Companion App's WebView
+    // fails silently when ZXing enumerates devices before permission exists).
+    const start = async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw Object.assign(new Error('Camera API unavailable'), { name: 'NotSupportedError' });
+      }
+      let stream;
+      try {
+        // Prefer the rear camera on phones.
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
         });
-      })
-      .catch((err) => {
-        if (statusEl) statusEl.textContent = 'Camera error: ' + err.message;
-      });
+      } catch (e) {
+        // Some WebViews reject the facingMode constraint — retry with any camera.
+        if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        } else {
+          throw e;
+        }
+      }
+      if (!this._cameraActive) { stream.getTracks().forEach((t) => t.stop()); return; }
+      this._cameraStream = stream;
+      videoEl.srcObject = stream;
+      try { await videoEl.play(); } catch (e) { /* autoplay may already be running */ }
+      setStatus('Loading barcode decoder…');
+      await this._loadZXing();
+      if (!this._cameraActive) return;
+      setStatus('Point the camera at a barcode…');
+      this._codeReader = new window.ZXing.BrowserMultiFormatReader();
+      const onResult = (result, err) => {
+        if (result) {
+          const barcode = result.getText();
+          hass.callService('smart_pantry', 'scan_barcode', this._scanPayload(barcode));
+          this._stopCamera();
+        } else if (err && err.name && err.name !== 'NotFoundException' && err.name !== 'NotFoundException2') {
+          setStatus('Decoder error: ' + this._escape(err.message || err.name));
+        }
+      };
+      // Decode from the stream we already own (never re-enumerates devices).
+      if (typeof this._codeReader.decodeFromStream === 'function') {
+        this._codeReader.decodeFromStream(stream, videoEl, onResult);
+      } else {
+        this._codeReader.decodeFromVideoDevice(undefined, videoEl, onResult);
+      }
+    };
+
+    start().catch((err) => {
+      const name = (err && err.name) || '';
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        setStatus('🚫 Camera permission denied.<br><br>' +
+          '<b>HA Companion App (Android):</b> long-press the app icon → App info → Permissions → Camera → Allow, then reopen this page.<br>' +
+          '<b>iOS:</b> Settings → Home Assistant → enable Camera.<br>' +
+          '<b>Browser:</b> tap the 🔒 icon in the address bar and allow the camera.');
+      } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+        setStatus('🚫 No camera found on this device. Use the scanner/manual input instead.');
+      } else if (name === 'NotReadableError') {
+        setStatus('🚫 Camera is in use by another app. Close it and try again.');
+      } else if (name === 'NotSupportedError') {
+        setStatus('🚫 This app/browser does not expose the camera API. Update the HA Companion App, or open this dashboard in Chrome/Safari over HTTPS.');
+      } else {
+        setStatus('Camera error: ' + this._escape((err && err.message) || String(err)));
+      }
+    });
+  }
+
+  /** Build a scan_barcode payload including optional qty/price from the scan view inputs. */
+  _scanPayload(barcode) {
+    const payload = { barcode: barcode };
+    const qtyEl = this.content && this.content.querySelector('#sp-scan-qty');
+    const priceEl = this.content && this.content.querySelector('#sp-scan-price');
+    const qty = qtyEl ? parseFloat(qtyEl.value) : NaN;
+    const price = priceEl ? parseFloat(priceEl.value) : NaN;
+    if (!isNaN(qty) && qty > 0) payload.quantity = qty;
+    if (!isNaN(price) && price >= 0) payload.price = price;
+    return payload;
   }
 
   _stopCamera() {
@@ -696,6 +1004,11 @@ class SmartPantryCard extends HTMLElement {
     if (this._codeReader) {
       try { this._codeReader.reset(); } catch (err) { /* already reset */ }
       this._codeReader = null;
+    }
+
+    if (this._cameraStream) {
+      try { this._cameraStream.getTracks().forEach((t) => t.stop()); } catch (err) { /* ok */ }
+      this._cameraStream = null;
     }
 
     if (this._cameraModal) {
@@ -776,3 +1089,9 @@ window.customCards.push({
   name: 'Smart Pantry Card',
   description: 'Interactive dashboard for Smart Pantry Scanner with suggestions, recipes and barcode scanning',
 });
+
+console.info(
+  '%c SMART-PANTRY-CARD %c v' + SMART_PANTRY_CARD_VERSION + ' loaded ',
+  'color: white; background: #2E7D32; font-weight: 700;',
+  'color: #2E7D32; background: white; font-weight: 700;'
+);

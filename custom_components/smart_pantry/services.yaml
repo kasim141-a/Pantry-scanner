@@ -96,6 +96,17 @@ add_item:
       required: false
       selector:
         text:
+    price:
+      name: Price
+      description: Price per unit (used for budget and savings statistics).
+      required: false
+      example: 2.49
+      selector:
+        number:
+          min: 0
+          max: 9999
+          step: 0.01
+          mode: box
 
 remove_item:
   name: Remove Item
@@ -195,6 +206,17 @@ update_item:
       required: false
       selector:
         text:
+    price:
+      name: Price
+      description: New price per unit.
+      required: false
+      example: 2.49
+      selector:
+        number:
+          min: 0
+          max: 9999
+          step: 0.01
+          mode: box
 
 scan_barcode:
   name: Scan Barcode
@@ -224,6 +246,17 @@ scan_barcode:
       required: false
       selector:
         text:
+    price:
+      name: Price
+      description: Price per unit of the scanned product.
+      required: false
+      example: 2.49
+      selector:
+        number:
+          min: 0
+          max: 9999
+          step: 0.01
+          mode: box
 
 get_recipes:
   name: Get Recipes

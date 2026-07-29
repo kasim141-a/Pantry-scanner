@@ -93,6 +93,9 @@ class PantryTotalItemsSensor(SmartPantryBaseSensor):
             "locations": locations,
             "last_updated": datetime.now().isoformat(),
             "low_stock_items": self.coordinator.get_low_stock_items(),
+            "inventory": self.coordinator.get_inventory(),
+            "inventory_value": self.coordinator.get_inventory_value(),
+            "currency": self.coordinator.data.get("config", {}).get("currency", "USD"),
         }
 
 
@@ -226,19 +229,34 @@ class PantryWeeklyBudgetSensor(SmartPantryBaseSensor):
     def __init__(self, coordinator, entry, household_name):
         super().__init__(coordinator, entry, household_name, ENTITY_WEEKLY_BUDGET_STATUS, "Weekly Budget", "mdi:wallet", "%")
 
+    def _estimated_spent(self) -> float:
+        """Prefer real prices; items without a price fall back to 2.5 each."""
+        pantry = self.coordinator.data.get("pantry", {})
+        spent = 0.0
+        for item in pantry.values():
+            price = item.get("price")
+            if price is not None:
+                try:
+                    spent += float(price) * max(0.0, float(item.get("quantity", 0)))
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            spent += 2.5
+        return round(spent, 2)
+
     @property
     def native_value(self) -> int:
         budget = self.coordinator.data.get("config", {}).get(CONF_WEEKLY_BUDGET, DEFAULT_WEEKLY_BUDGET)
-        spent = len(self.coordinator.data.get("pantry", {})) * 2.5
+        spent = self._estimated_spent()
         return min(100, int((spent / budget) * 100)) if budget > 0 else 0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         budget = self.coordinator.data.get("config", {}).get(CONF_WEEKLY_BUDGET, DEFAULT_WEEKLY_BUDGET)
-        spent = len(self.coordinator.data.get("pantry", {})) * 2.5
+        spent = self._estimated_spent()
         return {
             "weekly_budget": budget,
-            "estimated_spent": round(spent, 2),
+            "estimated_spent": spent,
             "remaining": round(max(0, budget - spent), 2),
             "currency": self.coordinator.data.get("config", {}).get(CONF_CURRENCY, DEFAULT_CURRENCY),
         }
