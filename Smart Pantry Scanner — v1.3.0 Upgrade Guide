@@ -1,0 +1,51 @@
+# Smart Pantry Scanner — v1.3.0 Upgrade Guide
+
+This release addresses all four gaps you reported: there was no way to browse the full inventory, edit an item's category or quantity, set a price, and the camera in the HA Companion App stalled at "Point the camera at a barcode…" without ever opening. All 14 backend tests and 38 card UI tests pass.
+
+## What's new
+
+### 1. Full Inventory view
+
+The main view now has a **📦 Inventory** button that opens a complete list of everything in your pantry. A search box filters by name as you type, and category chips (🥬 produce, 🥛 dairy, 🍗 meat, …) filter by category. When any items have prices, the header also shows your total stock value.
+
+### 2. Per-item editing
+
+Each inventory row carries **− / +** steppers that change the quantity with one tap (stepping down to zero asks for confirmation and removes the item). The **✏️** button expands an inline editor where you can change every field of the item and act on it:
+
+| Field / action | Behaviour |
+|---|---|
+| Quantity | Numeric input; saving `0` removes the item |
+| Unit | Dropdown of all supported units (piece, g, kg, l, bottle, pack, …) |
+| Category | Dropdown of all 11 categories — recategorize any item |
+| Location | pantry / refrigerator / freezer / countertop / wine cellar / other |
+| Price | Per-unit price in your configured currency |
+| Expiry date | Native date picker |
+| 🍽️ Use 1 | Calls `mark_consumed` for one unit |
+| 🗑️ | Deletes the item (with confirmation) |
+
+### 3. Price support end to end
+
+The `add_item`, `update_item`, and `scan_barcode` services all accept a `price` field now (visible in Developer Tools → Actions too). The Scan view gained optional **Quantity** and **Price** inputs that apply to camera, Bluetooth/USB, and manual scans alike. Prices flow into the statistics: the **savings** counter uses the real price of consumed items instead of a flat estimate, the **weekly budget** bar computes spend from actual prices where known, and the `…_total_items` sensor exposes a new `inventory` attribute (every item with price and expiry) plus `inventory_value` for use in your own automations and dashboards.
+
+### 4. Companion App camera fix
+
+The root cause of the frozen "Point the camera at a barcode…" screen is that the previous code let the ZXing library enumerate and open the camera itself. In the Companion App's WebView that fails silently when camera permission has not been granted to the app — no video, no error. The card now requests the camera stream directly via `getUserMedia` **before** starting the decoder, prefers the rear camera, and reports every failure mode on screen with specific instructions:
+
+| Symptom | What the card now shows |
+|---|---|
+| Permission denied | Step-by-step instructions to grant Camera permission to the HA app (Android: App info → Permissions → Camera; iOS: Settings → Home Assistant → Camera) |
+| No camera / constraint rejected | Falls back to any available camera, or tells you to use the scanner input |
+| Camera busy | "Camera is in use by another app" |
+| Camera API missing | Warning that the app/browser doesn't expose the camera — shown **before** you tap Use Camera, along with the permission steps |
+
+One important check: the camera API only exists on **HTTPS** origins. If your Companion App connects via `http://homeassistant.local:8123` or an IP address, the WebView never exposes the camera regardless of permissions. In that case set your Nabu Casa (or other TLS) URL in the app's server settings, or keep using the Bluetooth/USB/manual input which works on plain HTTP.
+
+## How to update
+
+Update both parts, since the inventory data comes from the backend:
+
+1. Replace `config/custom_components/smart_pantry/` with the version from the attached zip, then **restart Home Assistant**.
+2. Replace `config/www/smart-pantry-card.js` with the attached file — transfer it **as a file** (File Editor upload, Samba, or `scp`), never by copy-pasting text. Verify with `md5sum /config/www/smart-pantry-card.js`; it must read `effd7a26fd089f1c4d59f3bbe2a8bc56`.
+3. Change the dashboard resource URL to `/local/smart-pantry-card.js?v=1.3.0` and hard-refresh (Ctrl+Shift+R, or in the Companion App: Settings → Companion App → Debugging → Reset frontend cache). The console banner should read **SMART-PANTRY-CARD v1.3.0 loaded**.
+
+Your existing card configuration, pantry data, and options are preserved — no changes needed there. Existing items simply have no price until you set one via the edit form or a scan.
