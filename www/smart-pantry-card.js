@@ -1,11 +1,18 @@
-// Smart Pantry Card v1.3.1
+// Smart Pantry Card v1.4.0
 // Views: main (dashboard + suggestions), inventory (browse/edit items), recipes, scan.
 // - Auto-discovers Smart Pantry entities (no exact entity id needed).
 // - Shopping suggestions for low-stock and expiring items with one-tap add.
 // - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
 // - Syncs additions to Home Assistant's default Shopping List.
 
-const SMART_PANTRY_CARD_VERSION = '1.3.1';
+const SMART_PANTRY_CARD_VERSION = '1.4.0';
+
+// Category fallback icons used when an item has no product image.
+const SP_CATEGORY_ICONS = {
+  produce: '\ud83e\udd6c', dairy: '\ud83e\udd5b', meat: '\ud83c\udf57', seafood: '\ud83e\udd90',
+  bakery: '\ud83c\udf5e', pantry: '\ud83e\udd6b', frozen: '\ud83e\uddca', beverages: '\ud83e\udd64',
+  condiments: '\ud83e\uddc2', snacks: '\ud83c\udf7f', other: '\ud83d\udce6',
+};
 
 class SmartPantryCard extends HTMLElement {
   constructor() {
@@ -178,6 +185,9 @@ class SmartPantryCard extends HTMLElement {
       '.sp-item { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--card-background-color, #fff); border-radius: 10px; border: 1px solid var(--divider-color, #e0e0e0); font-size: 13px; }' +
       '.sp-item-left { display: flex; align-items: center; gap: 10px; }' +
       '.sp-item-icon { font-size: 20px; }' +
+      '.sp-item-avatar { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 20px; background: var(--secondary-background-color, #f0f0f0); flex-shrink: 0; overflow: hidden; }' +
+      '.sp-item-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }' +
+      '.sp-version { text-align: right; font-size: 10px; color: var(--secondary-text-color); margin-top: 8px; opacity: 0.7; }' +
       '.sp-item-name { font-weight: 600; }' +
       '.sp-item-meta { font-size: 11px; color: var(--secondary-text-color); }' +
       '.sp-badge { padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 700; }' +
@@ -295,9 +305,7 @@ class SmartPantryCard extends HTMLElement {
     } else {
       html += '<div class="sp-item-list">';
       suggestionItems.slice(0, 8).forEach((item, idx) => {
-        const reasonIcon = item.reason === 'expiring' ? '⏰'
-          : item.reason === 'low_stock' ? '🔴' : '⚠️';
-        html += '<div class="sp-item"><div class="sp-item-left"><span class="sp-item-icon">' + reasonIcon + '</span><div>' +
+        html += '<div class="sp-item"><div class="sp-item-left">' + this._itemIcon(item) + '<div>' +
           '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
           '<div class="sp-item-meta">' + this._escape(item.detail || item.reason || '') + '</div>' +
           '</div></div>' +
@@ -318,9 +326,7 @@ class SmartPantryCard extends HTMLElement {
         const days = item.days_until_expiry;
         const badgeClass = days <= 1 ? 'red' : days <= 3 ? 'orange' : 'green';
         const badgeText = days < 0 ? 'Expired' : days === 0 ? 'Today' : days === 1 ? '1 day' : days + ' days';
-        const icons = { produce: '🥬', dairy: '🥛', meat: '🍗', seafood: '🦐', bakery: '🍞', pantry: '🥫', frozen: '🧊', beverages: '🥤', condiments: '🧂', snacks: '🍿', other: '📦' };
-        const icon = icons[item.category] || '📦';
-        html += '<div class="sp-item"><div class="sp-item-left"><span class="sp-item-icon">' + icon + '</span><div>' +
+        html += '<div class="sp-item"><div class="sp-item-left">' + this._itemIcon(item) + '<div>' +
           '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
           '<div class="sp-item-meta">' + this._escape(item.quantity) + ' ' + this._escape(item.unit || '') + ' • ' + this._escape(item.storage_location || '') + '</div>' +
           '</div></div>' +
@@ -350,7 +356,7 @@ class SmartPantryCard extends HTMLElement {
     } else {
       html += '<div class="sp-item-list">';
       shoppingItems.slice(0, 5).forEach((item) => {
-        html += '<div class="sp-item"><div class="sp-item-left"><span class="sp-item-icon">📝</span><div>' +
+        html += '<div class="sp-item"><div class="sp-item-left">' + this._itemIcon(item) + '<div>' +
           '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
           (item.notes ? '<div class="sp-item-meta">' + this._escape(item.notes) + '</div>' : '') +
           '</div></div><span class="sp-badge green">' + this._escape(item.quantity) + ' ' + this._escape(item.unit || '') + '</span></div>';
@@ -374,6 +380,9 @@ class SmartPantryCard extends HTMLElement {
       '<button class="sp-btn sp-btn-secondary" id="btn-scan">📷 Scan</button>' +
       '<button class="sp-btn sp-btn-ghost" id="btn-clear">🗑️ Clear</button>' +
       '</div>';
+
+    // Version footer — makes stale browser caches visible at a glance.
+    html += '<div class="sp-version">Smart Pantry Card v' + SMART_PANTRY_CARD_VERSION + '</div>';
 
     html += '</div>';
     this.content.innerHTML = html;
@@ -449,7 +458,7 @@ class SmartPantryCard extends HTMLElement {
   // ---- Inventory view -------------------------------------------------------
 
   _catIcons() {
-    return { produce: '🥬', dairy: '🥛', meat: '🍗', seafood: '🦐', bakery: '🍞', pantry: '🥫', frozen: '🧊', beverages: '🥤', condiments: '🧂', snacks: '🍿', other: '📦' };
+    return SP_CATEGORY_ICONS;
   }
 
   _categories() {
@@ -506,7 +515,6 @@ class SmartPantryCard extends HTMLElement {
     }
 
     filtered.forEach((item, idx) => {
-      const icon = icons[item.category] || '📦';
       const days = item.days_until_expiry;
       let expiryBadge = '';
       if (days != null) {
@@ -519,7 +527,7 @@ class SmartPantryCard extends HTMLElement {
 
       html += '<div class="sp-inv-item">';
       html += '<div class="sp-inv-row">' +
-        '<div class="sp-item-left"><span class="sp-item-icon">' + icon + '</span><div>' +
+        '<div class="sp-item-left">' + this._itemIcon(item) + '<div>' +
         '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
         '<div class="sp-item-meta">' + this._escape(item.category || 'other') + ' • ' + this._escape(item.storage_location || 'pantry') +
         (priceText ? ' • ' + priceText : '') +
@@ -796,7 +804,8 @@ class SmartPantryCard extends HTMLElement {
       const suggest = s.suggest_shopping_list === true || s.low_stock === true || s.expiring === true;
       html += '<div class="sp-section"><div class="sp-section-title">✅ Last Scan</div>' +
         '<div class="sp-recipe-card">' +
-        '<div class="sp-item-name" style="font-size:15px;">' + this._escape(s.item_name || s.name || 'Unknown item') + '</div>' +
+        '<div style="display:flex;align-items:center;gap:10px;">' + this._itemIcon(s) +
+        '<div class="sp-item-name" style="font-size:15px;">' + this._escape(s.item_name || s.name || 'Unknown item') + '</div></div>' +
         '<div class="sp-item-meta" style="margin-top:4px;">' +
         'Qty: ' + this._escape(s.quantity != null ? s.quantity : '—') + ' ' + this._escape(s.unit || '') +
         (s.expiration_date ? ' • Expires: ' + this._escape(s.expiration_date) : '') +
@@ -1159,6 +1168,21 @@ class SmartPantryCard extends HTMLElement {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  /**
+   * Visual representation for an item: product photo when available
+   * (e.g. from Open Food Facts after a barcode scan), else a category emoji.
+   */
+  _itemIcon(item) {
+    const url = item && item.image_url;
+    if (url && /^https?:\/\//i.test(url)) {
+      const fallback = this._escape(SP_CATEGORY_ICONS[(item.category || 'other')] || SP_CATEGORY_ICONS.other);
+      return '<span class="sp-item-avatar"><img src="' + this._escape(url) + '" alt="" loading="lazy" ' +
+        'onerror="this.parentNode.textContent=\'' + fallback + '\'"></span>';
+    }
+    const icon = SP_CATEGORY_ICONS[(item && item.category) || 'other'] || SP_CATEGORY_ICONS.other;
+    return '<span class="sp-item-avatar">' + icon + '</span>';
   }
 }
 

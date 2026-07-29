@@ -37,6 +37,7 @@ SERVICE_ADD_ITEM_SCHEMA = vol.Schema({
     vol.Optional(ATTR_BARCODE): cv.string,
     vol.Optional(ATTR_NOTES): cv.string,
     vol.Optional(ATTR_PRICE): vol.Coerce(float),
+    vol.Optional("image_url"): cv.string,
 })
 
 SERVICE_REMOVE_ITEM_SCHEMA = vol.Schema({vol.Required(ATTR_ITEM_NAME): cv.string})
@@ -50,6 +51,7 @@ SERVICE_UPDATE_ITEM_SCHEMA = vol.Schema({
     vol.Optional(ATTR_STORAGE_LOCATION): vol.In(STORAGE_LOCATIONS),
     vol.Optional(ATTR_NOTES): cv.string,
     vol.Optional(ATTR_PRICE): vol.Coerce(float),
+    vol.Optional("image_url"): cv.string,
 })
 
 SERVICE_SCAN_BARCODE_SCHEMA = vol.Schema({
@@ -97,7 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             expiration_date=call.data.get(ATTR_EXPIRATION_DATE),
             storage_location=call.data[ATTR_STORAGE_LOCATION],
             barcode=call.data.get(ATTR_BARCODE), notes=call.data.get(ATTR_NOTES),
-            price=call.data.get(ATTR_PRICE),
+            price=call.data.get(ATTR_PRICE), image_url=call.data.get("image_url"),
         )
 
     async def handle_remove_item(call: ServiceCall) -> None:
@@ -110,6 +112,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             expiration_date=call.data.get(ATTR_EXPIRATION_DATE),
             storage_location=call.data.get(ATTR_STORAGE_LOCATION),
             notes=call.data.get(ATTR_NOTES), price=call.data.get(ATTR_PRICE),
+            image_url=call.data.get("image_url"),
         )
 
     async def handle_scan_barcode(call: ServiceCall) -> None:

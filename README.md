@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1%2B-blue.svg)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/version-1.3.0-orange.svg)](https://github.com/kasim141-a/Pantry-scanner)
+[![Version](https://img.shields.io/badge/version-1.4.0-orange.svg)](https://github.com/kasim141-a/Pantry-scanner)
 
 A Home Assistant custom integration for kitchen inventory management with barcode scanning, recipe suggestions from your pantry, and smart shopping list suggestions that sync with Home Assistant's built-in **Shopping List**.
 
@@ -14,6 +14,7 @@ A Home Assistant custom integration for kitchen inventory management with barcod
 | Inventory browser | **New in 1.3:** a full 📦 Inventory view with search, category filters, ± quantity steppers, and inline editing of every field |
 | Barcode scanning | Mobile camera (ZXing), Bluetooth/USB keyboard-wedge scanners, or manual entry |
 | Product lookup | Built-in barcode database plus automatic **Open Food Facts** fallback for unknown barcodes |
+| Item pictures & icons | **New in 1.4:** every item shows a visual avatar — the real **product photo** (fetched automatically from Open Food Facts when you scan a barcode, or set manually via `image_url`) with a category emoji fallback |
 | Recipes from pantry | Press **Recipes** to score built-in recipes against what you have; add missing ingredients to the shopping list with one tap |
 | Shopping suggestions | Items that are **low in stock** or **expiring soon** are surfaced automatically, with one-tap or bulk add |
 | Scan-triggered prompts | When a scanned item is low or expiring, the card prompts (or automatically adds) it to the shopping list |
@@ -78,7 +79,7 @@ entity: sensor.smart_pantry_scanner_smart_pantry_my_home_total_items
 
 ## Using the card
 
-**Main view** shows your stats, weekly budget, a **💡 Suggested for Shopping List** panel (low-stock and expiring items with per-item **🛒 Add** buttons and an **Add all** button), the expiring-soon list, categories, the current shopping list, and total stock value when prices are set.
+**Main view** shows your stats, weekly budget, a **💡 Suggested for Shopping List** panel (low-stock and expiring items with per-item **🛒 Add** buttons and an **Add all** button), the expiring-soon list, categories, the current shopping list, and total stock value when prices are set. Every item row displays a picture avatar: the product photo when known, otherwise its category emoji. A small **version footer** at the bottom of the card shows which card version your browser is actually running — if it shows an older version than you installed, your browser is serving a **cached copy**: bump the resource URL (e.g. `/local/smart-pantry-card.js?v=1.4.0`) and hard-refresh (Ctrl+Shift+R), or in the Companion App use Settings → Companion App → Debugging → Reset frontend cache. A stale cache is also why buttons added in newer versions (such as 📦 Inventory or 🛒 Add all) can seem to “disappear” in one browser while showing in another.
 
 **📦 Inventory** (new in 1.3) lists every pantry item with a search box and category filter chips. Each row has **− / +** steppers for one-tap quantity changes (stepping to zero asks for confirmation and removes the item) and a **✏️ edit** button that opens an inline form where you can change the **quantity, unit, category, storage location, price, and expiry date**, consume one unit, or delete the item entirely.
 

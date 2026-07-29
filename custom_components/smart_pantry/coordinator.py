@@ -83,14 +83,15 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
     async def add_item(self, name: str, quantity: float = 1, unit: str = "piece",
                        category: str = "other", expiration_date: str | None = None,
                        storage_location: str = "pantry", barcode: str | None = None,
-                       notes: str | None = None, price: float | None = None) -> None:
+                       notes: str | None = None, price: float | None = None,
+                       image_url: str | None = None) -> None:
         data = await self._async_update_data()
         key = name.lower().strip()
         item = {
             "name": name, "quantity": quantity, "unit": unit,
             "category": category, "expiration_date": expiration_date,
             "storage_location": storage_location, "barcode": barcode,
-            "notes": notes, "price": price,
+            "notes": notes, "price": price, "image_url": image_url,
             "added_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         }
@@ -100,6 +101,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             item["added_at"] = existing.get("added_at", item["added_at"])
             item["notes"] = notes or existing.get("notes")
             item["price"] = price if price is not None else existing.get("price")
+            item["image_url"] = image_url or existing.get("image_url")
         data["pantry"][key] = item
         data["stats"]["items_scanned"] = data["stats"].get("items_scanned", 0) + 1
         await self.store.async_save(data)
@@ -121,7 +123,8 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                           unit: str | None = None, category: str | None = None,
                           expiration_date: str | None = None,
                           storage_location: str | None = None,
-                          notes: str | None = None, price: float | None = None) -> None:
+                          notes: str | None = None, price: float | None = None,
+                          image_url: str | None = None) -> None:
         data = await self._async_update_data()
         key = name.lower().strip()
         if key not in data["pantry"]:
@@ -143,6 +146,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         if storage_location is not None: item["storage_location"] = storage_location
         if notes is not None: item["notes"] = notes
         if price is not None: item["price"] = price
+        if image_url is not None: item["image_url"] = image_url or None
         item["updated_at"] = datetime.now().isoformat()
         await self.store.async_save(data)
         await self.async_request_refresh()
@@ -172,11 +176,15 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                             if keyword in categories:
                                 category = mapped
                                 break
+                        image_url = (product.get("image_front_small_url")
+                                     or product.get("image_front_url")
+                                     or product.get("image_url"))
                         return {
                             "name": name,
                             "category": category,
                             "typical_expiry_days": CATEGORY_DEFAULT_EXPIRY_DAYS.get(category, 30),
                             "source": "openfoodfacts",
+                            "image_url": image_url,
                         }
         except Exception as err:  # noqa: BLE001 - network failures are non-fatal
             _LOGGER.debug("Open Food Facts lookup failed for %s: %s", barcode, err)
@@ -195,7 +203,8 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             expiry = datetime.now() + timedelta(days=product["typical_expiry_days"])
             expiration_date = expiry.strftime("%Y-%m-%d")
         await self.add_item(name=name, quantity=quantity, category=product["category"],
-                            expiration_date=expiration_date, barcode=barcode, price=price)
+                            expiration_date=expiration_date, barcode=barcode, price=price,
+                            image_url=product.get("image_url"))
         data = await self._async_update_data()
         item = data["pantry"].get(name.lower().strip(), {})
         qty = item.get("quantity", quantity)
@@ -227,6 +236,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             "suggest_shopping_list": suggest,
             "auto_added": bool(suggest and self.auto_add_to_ha_list),
             "source": product.get("source", "local"),
+            "image_url": item.get("image_url"),
         })
 
     async def mark_consumed(self, name: str, quantity: float = 1) -> None:
@@ -328,7 +338,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         data = self.data or {}
         return [
             {"name": i["name"], "quantity": i["quantity"], "unit": i["unit"],
-             "category": i.get("category", "other")}
+             "category": i.get("category", "other"), "image_url": i.get("image_url")}
             for i in data.get("pantry", {}).values()
             if i.get("quantity", 0) <= threshold
         ]
@@ -345,6 +355,8 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             suggestions[key] = {
                 "name": item["name"], "quantity": item["quantity"],
                 "unit": item.get("unit", "piece"),
+                "category": item.get("category", "other"),
+                "image_url": item.get("image_url"),
                 "reason": "low_stock",
                 "detail": f"Only {item['quantity']:g} {item.get('unit', 'piece')} left",
             }
@@ -363,6 +375,8 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                 suggestions[key] = {
                     "name": item["name"], "quantity": item["quantity"],
                     "unit": item.get("unit", "piece"),
+                    "category": item.get("category", "other"),
+                    "image_url": item.get("image_url"),
                     "reason": "expiring",
                     "detail": detail,
                 }
@@ -452,6 +466,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                 "price": item.get("price"),
                 "barcode": item.get("barcode"),
                 "notes": item.get("notes"),
+                "image_url": item.get("image_url"),
                 "days_until_expiry": None,
             }
             if entry["expiration_date"]:
