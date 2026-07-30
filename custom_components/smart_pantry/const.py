@@ -45,6 +45,7 @@ SERVICE_CLEAR_SHOPPING_LIST: Final = "clear_shopping_list"
 SERVICE_MARK_CONSUMED: Final = "mark_consumed"
 SERVICE_SYNC_SUGGESTIONS: Final = "sync_suggestions_to_shopping_list"
 SERVICE_ADD_RECIPE_MISSING: Final = "add_recipe_missing_to_shopping_list"
+SERVICE_RENAME_ITEM: Final = "rename_item"
 
 ATTR_ITEM_NAME: Final = "item_name"
 ATTR_QUANTITY: Final = "quantity"
@@ -149,8 +150,14 @@ BARCODE_DB: Final = {
 }
 
 # Open Food Facts public API used as fallback when a barcode is not in BARCODE_DB.
+# NOTE: OFF blocks requests without a descriptive User-Agent, so one MUST be sent.
 OFF_API_URL: Final = "https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
+OFF_API_URL_V0: Final = "https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
 OFF_TIMEOUT: Final = 8
+OFF_USER_AGENT: Final = (
+    "SmartPantryScanner/1.5.1 (Home Assistant integration; "
+    "https://github.com/kasim141-a/Pantry-scanner)"
+)
 
 # Map Open Food Facts category keywords to Smart Pantry categories.
 OFF_CATEGORY_MAP: Final = {

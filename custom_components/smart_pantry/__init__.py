@@ -18,7 +18,7 @@ from .const import (
     SERVICE_ADD_ITEM, SERVICE_REMOVE_ITEM, SERVICE_UPDATE_ITEM,
     SERVICE_SCAN_BARCODE, SERVICE_GET_RECIPES,
     SERVICE_ADD_TO_SHOPPING_LIST, SERVICE_CLEAR_SHOPPING_LIST, SERVICE_MARK_CONSUMED,
-    SERVICE_SYNC_SUGGESTIONS, SERVICE_ADD_RECIPE_MISSING, ATTR_RECIPE_NAME,
+    SERVICE_SYNC_SUGGESTIONS, SERVICE_ADD_RECIPE_MISSING, SERVICE_RENAME_ITEM, ATTR_RECIPE_NAME,
     ATTR_ITEM_NAME, ATTR_QUANTITY, ATTR_UNIT, ATTR_CATEGORY,
     ATTR_EXPIRATION_DATE, ATTR_STORAGE_LOCATION, ATTR_BARCODE, ATTR_NOTES, ATTR_PRICE, ATTR_RECIPE_COUNT,
     CATEGORIES, STORAGE_LOCATIONS, UNITS,
@@ -77,6 +77,11 @@ SERVICE_MARK_CONSUMED_SCHEMA = vol.Schema({
 
 SERVICE_ADD_RECIPE_MISSING_SCHEMA = vol.Schema({
     vol.Required(ATTR_RECIPE_NAME): cv.string,
+})
+
+SERVICE_RENAME_ITEM_SCHEMA = vol.Schema({
+    vol.Required("old_name"): cv.string,
+    vol.Required("new_name"): cv.string,
 })
 
 
@@ -142,6 +147,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         count = await coordinator.sync_suggestions_to_shopping_list()
         hass.bus.async_fire(f"{DOMAIN}_suggestions_synced", {"count": count})
 
+    async def handle_rename_item(call: ServiceCall) -> None:
+        await coordinator.rename_item(call.data["old_name"], call.data["new_name"])
+
     async def handle_add_recipe_missing(call: ServiceCall) -> None:
         count = await coordinator.add_recipe_missing_to_shopping_list(call.data[ATTR_RECIPE_NAME])
         hass.bus.async_fire(f"{DOMAIN}_recipe_missing_added", {
@@ -158,6 +166,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_MARK_CONSUMED, handle_mark_consumed, schema=SERVICE_MARK_CONSUMED_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_SYNC_SUGGESTIONS, handle_sync_suggestions)
     hass.services.async_register(DOMAIN, SERVICE_ADD_RECIPE_MISSING, handle_add_recipe_missing, schema=SERVICE_ADD_RECIPE_MISSING_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_RENAME_ITEM, handle_rename_item, schema=SERVICE_RENAME_ITEM_SCHEMA)
 
     return True
 

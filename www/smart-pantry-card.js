@@ -1,11 +1,11 @@
-// Smart Pantry Card v1.4.0
+// Smart Pantry Card v1.5.1 - Lovelace custom card for the Smart Pantry Scanner integration.
 // Views: main (dashboard + suggestions), inventory (browse/edit items), recipes, scan.
 // - Auto-discovers Smart Pantry entities (no exact entity id needed).
 // - Shopping suggestions for low-stock and expiring items with one-tap add.
 // - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
 // - Syncs additions to Home Assistant's default Shopping List.
 
-const SMART_PANTRY_CARD_VERSION = '1.4.0';
+const SMART_PANTRY_CARD_VERSION = '1.5.1';
 
 // Category fallback icons used when an item has no product image.
 const SP_CATEGORY_ICONS = {
@@ -32,7 +32,10 @@ class SmartPantryCard extends HTMLElement {
     this._wedgeListener = null;
     this._invSearch = '';      // inventory search text
     this._invCategory = 'all'; // inventory category filter
+    this._invLocation = 'all'; // inventory storage-location filter
     this._invEditing = null;   // name of item being edited inline
+    this._rapidMode = false;   // external-scanner rapid scan mode
+    this._rapidCount = 0;      // scans this rapid session
   }
 
   static getConfigElement() {
@@ -221,7 +224,11 @@ class SmartPantryCard extends HTMLElement {
       '.sp-filter-row { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }' +
       '.sp-filter-chip { padding: 5px 10px; border-radius: 100px; font-size: 11px; cursor: pointer; border: 1px solid var(--divider-color, #e0e0e0); background: var(--card-background-color, #fff); color: var(--primary-text-color); }' +
       '.sp-filter-chip.active { background: #2E7D32; color: white; border-color: #2E7D32; }' +
-      '.sp-inv-item { padding: 10px 12px; background: var(--card-background-color, #fff); border-radius: 10px; border: 1px solid var(--divider-color, #e0e0e0); font-size: 13px; margin-bottom: 6px; }' +
+      '.sp-inv-item { padding: 10px 12px; background: var(--card-background-color, #fff); border-radius: 10px; border: 1px solid var(--divider-color, #e0e0e0); border-left: 4px solid #2E7D32; font-size: 13px; margin-bottom: 6px; }' +
+      '.sp-inv-item.exp-orange { border-left-color: #FF9800; }' +
+      '.sp-inv-item.exp-red { border-left-color: #E53935; }' +
+      '.sp-rename-row { display: flex; gap: 8px; margin-top: 8px; }' +
+      '.sp-rename-row input { flex: 1; }' +
       '.sp-inv-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }' +
       '.sp-stepper { display: flex; align-items: center; gap: 6px; }' +
       '.sp-step-btn { width: 30px; height: 30px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 16px; font-weight: 700; cursor: pointer; line-height: 1; }' +
@@ -481,16 +488,19 @@ class SmartPantryCard extends HTMLElement {
     const currency = attrs.currency || '';
     const icons = this._catIcons();
 
-    // Filter by search text and category.
+    // Filter by search text, category, and storage location.
     const search = (this._invSearch || '').toLowerCase();
     const filtered = inventory.filter((item) => {
       if (this._invCategory !== 'all' && (item.category || 'other') !== this._invCategory) return false;
+      if (this._invLocation !== 'all' && (item.storage_location || 'pantry') !== this._invLocation) return false;
       if (search && !(item.name || '').toLowerCase().includes(search)) return false;
       return true;
     });
 
     // Category chips: 'all' plus only categories present in inventory.
     const presentCats = Array.from(new Set(inventory.map((i) => i.category || 'other')));
+    // Location chips: 'all' plus only locations present in inventory.
+    const presentLocs = Array.from(new Set(inventory.map((i) => i.storage_location || 'pantry')));
 
     let html = this._styles() + '<div class="sp-container">';
     html += '<button class="sp-btn-back" id="sp-back">← Back</button>';
@@ -506,6 +516,18 @@ class SmartPantryCard extends HTMLElement {
         (icons[cat] || '📦') + ' ' + this._escape(cat) + '</span>';
     });
     html += '</div>';
+
+    // Storage-location filter chips (fridge/freezer/pantry… like NoWaste lists).
+    if (presentLocs.length > 1) {
+      const locIcons = { pantry: '🚪', refrigerator: '🧊', freezer: '❄️', countertop: '🍽️', wine_cellar: '🍷', other: '📍' };
+      html += '<div class="sp-filter-row">';
+      html += '<span class="sp-filter-chip ' + (this._invLocation === 'all' ? 'active' : '') + '" data-loc="all">All locations</span>';
+      presentLocs.forEach((loc) => {
+        html += '<span class="sp-filter-chip ' + (this._invLocation === loc ? 'active' : '') + '" data-loc="' + this._escape(loc) + '">' +
+          (locIcons[loc] || '📍') + ' ' + this._escape(loc.replace('_', ' ')) + '</span>';
+      });
+      html += '</div>';
+    }
 
     if (inventory.length === 0) {
       html += '<div class="sp-empty">Your pantry is empty — scan or add items to get started.<br>' +
@@ -525,7 +547,12 @@ class SmartPantryCard extends HTMLElement {
       const priceText = item.price != null ? this._escape(Number(item.price).toFixed(2)) + ' ' + this._escape(currency) : '';
       const isEditing = this._invEditing === item.name;
 
-      html += '<div class="sp-inv-item">';
+      // Traffic-light left border (smartpantry.ch style): red = use now,
+      // orange = expiring soon, green = fine.
+      let expClass = '';
+      if (days != null) expClass = days <= 1 ? ' exp-red' : days <= 3 ? ' exp-orange' : '';
+
+      html += '<div class="sp-inv-item' + expClass + '">';
       html += '<div class="sp-inv-row">' +
         '<div class="sp-item-left">' + this._itemIcon(item) + '<div>' +
         '<div class="sp-item-name">' + this._escape(item.name) + '</div>' +
@@ -544,6 +571,7 @@ class SmartPantryCard extends HTMLElement {
 
       if (isEditing) {
         html += '<div class="sp-edit-form">';
+        html += '<div class="sp-edit-full"><label>Name</label><input type="text" class="sp-select" data-f="item_new_name" value="' + this._escape(item.name) + '"></div>';
         html += '<div><label>Quantity</label><input type="number" step="0.1" min="0" class="sp-select" data-f="quantity" value="' + this._escape(item.quantity) + '"></div>';
         html += '<div><label>Unit</label><select class="sp-select" data-f="unit">' +
           this._units().map((u) => '<option value="' + u + '"' + (u === item.unit ? ' selected' : '') + '>' + u + '</option>').join('') + '</select></div>';
@@ -590,6 +618,14 @@ class SmartPantryCard extends HTMLElement {
       };
     });
 
+    // Location chips.
+    this.content.querySelectorAll('[data-loc]').forEach((chip) => {
+      chip.onclick = () => {
+        this._invLocation = chip.getAttribute('data-loc');
+        this._renderCard();
+      };
+    });
+
     // Quantity steppers.
     this.content.querySelectorAll('[data-inc]').forEach((btn) => {
       btn.onclick = () => {
@@ -624,16 +660,28 @@ class SmartPantryCard extends HTMLElement {
         if (!item) return;
         const form = btn.closest('.sp-edit-form');
         const payload = { item_name: item.name };
+        let newName = null;
         form.querySelectorAll('[data-f]').forEach((f) => {
           const field = f.getAttribute('data-f');
           const val = f.value;
           if (val === '' || val == null) return;
+          if (field === 'item_new_name') { newName = val.trim(); return; }
           if (field === 'quantity' || field === 'price') payload[field] = Number(val);
           else payload[field] = val;
         });
-        hass.callService('smart_pantry', 'update_item', payload);
-        this._invEditing = null;
-        this._renderCard();
+        const finish = () => {
+          hass.callService('smart_pantry', 'update_item', payload);
+          this._invEditing = null;
+          this._renderCard();
+        };
+        if (newName && newName !== item.name) {
+          // Rename first (also teaches the barcode library), then apply edits.
+          hass.callService('smart_pantry', 'rename_item', { old_name: item.name, new_name: newName })
+            .then(() => { payload.item_name = newName; finish(); })
+            .catch(() => finish());
+        } else {
+          finish();
+        }
       };
     });
 
@@ -692,6 +740,10 @@ class SmartPantryCard extends HTMLElement {
         (cookTime ? '<span class="sp-badge orange">⏱ ' + this._escape(cookTime) + '</span>' : '') +
         '</div>';
 
+      if (recipe.uses_expiring && recipe.uses_expiring.length > 0) {
+        html += '<div style="margin-top:4px;"><span class="sp-badge orange">⏰ Use it up: ' +
+          this._escape(recipe.uses_expiring.join(', ')) + '</span></div>';
+      }
       html += '<div style="font-size:12px;color:var(--secondary-text-color);margin-top:4px;">' + pct + '% match — you have ' + matched.length + ' of ' + (recipe.total_ingredients || total) + ' ingredients</div>';
       html += '<div class="sp-match-bar" style="background:' + barColor + ';width:' + pct + '%;"></div>';
 
@@ -771,6 +823,9 @@ class SmartPantryCard extends HTMLElement {
       'Bluetooth/USB scanners work like keyboards — just scan while this view is open. ' +
       'You can also type a barcode manually:</div>' +
       '<input type="text" id="sp-barcode-input" class="sp-input" placeholder="Scan with BT/USB or type here…" autofocus>' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:8px;cursor:pointer;">' +
+      '<input type="checkbox" id="sp-rapid-mode"' + (this._rapidMode ? ' checked' : '') + '> ⚡ Rapid scan mode (external scanner: auto-add each scan' +
+      (this._rapidMode && this._rapidCount > 0 ? ' — <b>' + this._rapidCount + ' scanned</b>' : '') + ')</label>' +
       '<div style="display:flex;gap:8px;margin-top:8px;">' +
       '<div style="flex:1;"><label style="font-size:11px;color:var(--secondary-text-color);">Quantity</label>' +
       '<input type="number" id="sp-scan-qty" class="sp-input" min="1" step="1" value="1"></div>' +
@@ -799,9 +854,13 @@ class SmartPantryCard extends HTMLElement {
     html += '</div>';
 
     // Last scan result
-    if (this._lastScan) {
+    if (this._lastScan && this._lastScan.error === 'empty_barcode') {
+      html += '<div class="sp-section"><div class="sp-warning">⚠️ Empty barcode ignored — please scan or type a valid barcode.</div></div>';
+    } else if (this._lastScan) {
       const s = this._lastScan;
       const suggest = s.suggest_shopping_list === true || s.low_stock === true || s.expiring === true;
+      const isUnknown = s.lookup_failed === true ||
+        ((s.item_name || '').toLowerCase().indexOf('unknown item') === 0);
       html += '<div class="sp-section"><div class="sp-section-title">✅ Last Scan</div>' +
         '<div class="sp-recipe-card">' +
         '<div style="display:flex;align-items:center;gap:10px;">' + this._itemIcon(s) +
@@ -810,7 +869,19 @@ class SmartPantryCard extends HTMLElement {
         'Qty: ' + this._escape(s.quantity != null ? s.quantity : '—') + ' ' + this._escape(s.unit || '') +
         (s.expiration_date ? ' • Expires: ' + this._escape(s.expiration_date) : '') +
         (s.source === 'openfoodfacts' ? ' • via Open Food Facts' : '') +
+        (s.source === 'library' ? ' • from your Product Library' : '') +
         '</div>';
+      if (isUnknown) {
+        // The barcode was not found anywhere: let the user name it right here.
+        // The name is learned, so the next scan of this barcode resolves instantly.
+        html += '<div class="sp-rename-row">' +
+          '<input type="text" id="sp-rename-input" class="sp-input" placeholder="What is this product? e.g. Basmati Rice 1kg">' +
+          '<button class="sp-btn-mini" id="sp-rename-save">💾 Save name</button>' +
+          '</div>' +
+          '<div style="font-size:11px;color:var(--secondary-text-color);margin-top:4px;">' +
+          'Not found in any database. Name it once — it\'s remembered, and the next scan of barcode ' +
+          this._escape(s.barcode || '') + ' will recognise it automatically.</div>';
+      }
       if (s.auto_added === true) {
         html += '<div class="sp-suggest" style="margin-top:8px;"><span>🛒 Automatically added to your Shopping List</span></div>';
       } else if (suggest) {
@@ -834,10 +905,21 @@ class SmartPantryCard extends HTMLElement {
     const submitBarcode = () => {
       if (!input) return;
       const value = input.value.trim();
+      // Guard: never submit an empty barcode (was the "Unknown Item ()" bug).
       if (value.length === 0) return;
+      if (this._rapidMode) this._rapidCount += 1;
       hass.callService('smart_pantry', 'scan_barcode', this._scanPayload(value));
       input.value = '';
     };
+
+    const rapidToggle = this.content.querySelector('#sp-rapid-mode');
+    if (rapidToggle) {
+      rapidToggle.onchange = () => {
+        this._rapidMode = rapidToggle.checked;
+        if (!this._rapidMode) this._rapidCount = 0;
+        this._renderCard();
+      };
+    }
 
     if (submit) submit.onclick = submitBarcode;
     if (input) {
@@ -871,6 +953,26 @@ class SmartPantryCard extends HTMLElement {
       };
     }
 
+    // Rename flow for unknown items.
+    const renameSave = this.content.querySelector('#sp-rename-save');
+    const renameInput = this.content.querySelector('#sp-rename-input');
+    if (renameSave && renameInput && this._lastScan) {
+      const doRename = () => {
+        const newName = renameInput.value.trim();
+        if (!newName) return;
+        const oldName = this._lastScan.item_name || this._lastScan.name;
+        hass.callService('smart_pantry', 'rename_item', { old_name: oldName, new_name: newName });
+        this._lastScan = Object.assign({}, this._lastScan, {
+          item_name: newName, lookup_failed: false, source: 'library',
+        });
+        this._renderCard();
+      };
+      renameSave.onclick = doRename;
+      renameInput.onkeydown = (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); doRename(); }
+      };
+    }
+
     const scanAdd = this.content.querySelector('#sp-scan-add');
     if (scanAdd && this._lastScan) {
       scanAdd.onclick = () => {
@@ -894,6 +996,7 @@ class SmartPantryCard extends HTMLElement {
         if (this._wedgeBuffer.length >= 6) {
           const code = this._wedgeBuffer;
           this._wedgeBuffer = '';
+          if (this._rapidMode) this._rapidCount += 1;
           hass.callService('smart_pantry', 'scan_barcode', this._scanPayload(code));
           ev.preventDefault();
         } else {

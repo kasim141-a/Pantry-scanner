@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1%2B-blue.svg)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/version-1.4.0-orange.svg)](https://github.com/kasim141-a/Pantry-scanner)
+[![Version](https://img.shields.io/badge/version-1.5.1-orange.svg)](https://github.com/kasim141-a/Pantry-scanner)
 
 A Home Assistant custom integration for kitchen inventory management with barcode scanning, recipe suggestions from your pantry, and smart shopping list suggestions that sync with Home Assistant's built-in **Shopping List**.
 
@@ -13,7 +13,12 @@ A Home Assistant custom integration for kitchen inventory management with barcod
 | Pantry inventory | Track items with quantity, unit, category, storage location, expiry date, and **price** |
 | Inventory browser | **New in 1.3:** a full 📦 Inventory view with search, category filters, ± quantity steppers, and inline editing of every field |
 | Barcode scanning | Mobile camera (ZXing), Bluetooth/USB keyboard-wedge scanners, or manual entry |
-| Product lookup | Built-in barcode database plus automatic **Open Food Facts** fallback for unknown barcodes |
+| Product lookup | Built-in barcode database plus automatic **Open Food Facts** fallback (v2 API with v0 fallback, proper User-Agent, 10 s timeout) for unknown barcodes |
+| Product Library | **New in 1.5:** the integration **learns** every product you scan or name — the next scan of the same barcode resolves instantly from your personal library, even offline |
+| Unknown item rename | **New in 1.5:** when a barcode isn't found anywhere, name it right on the scan result — it's remembered forever (fixes the "Unknown Item ()" issue) |
+| Rapid scan mode | **New in 1.5:** a toggle in the Scan view for external scanners — scan item after item hands-free with a running counter |
+| Use-it-up recipes | **New in 1.5:** recipes that use ingredients expiring soon are flagged ⏰ and ranked first, helping reduce food waste |
+| Location filters | **New in 1.5:** filter the Inventory by storage location (fridge, freezer, pantry…), with traffic-light expiry borders on each row |
 | Item pictures & icons | **New in 1.4:** every item shows a visual avatar — the real **product photo** (fetched automatically from Open Food Facts when you scan a barcode, or set manually via `image_url`) with a category emoji fallback |
 | Recipes from pantry | Press **Recipes** to score built-in recipes against what you have; add missing ingredients to the shopping list with one tap |
 | Shopping suggestions | Items that are **low in stock** or **expiring soon** are surfaced automatically, with one-tap or bulk add |
@@ -119,6 +124,7 @@ After each scan the item is added to the pantry, and if it is low in stock or ex
 | `smart_pantry.add_to_shopping_list` | Add to the pantry list **and** HA's default Shopping List |
 | `smart_pantry.sync_suggestions_to_shopping_list` | **New:** push all current low-stock/expiring suggestions to both lists |
 | `smart_pantry.add_recipe_missing_to_shopping_list` | **New:** add a recipe's missing ingredients to both lists (`recipe_name` required) |
+| `smart_pantry.rename_item` | **New in 1.5:** rename any pantry item (`old_name`, `new_name`); if the item has a barcode, the name is learned into your Product Library so future scans resolve instantly; renaming onto an existing item merges quantities |
 | `smart_pantry.mark_consumed` | Decrease quantity; fires `smart_pantry_low_stock` when an item runs low or out |
 | `smart_pantry.clear_shopping_list` | Clear the internal list (your HA Shopping List is left untouched) |
 
@@ -135,7 +141,7 @@ See `custom_components/smart_pantry/example_automations.yaml` for ready-made aut
 
 ## Barcode lookup
 
-Scanned barcodes are resolved against the built-in database first, then against the free [Open Food Facts](https://world.openfoodfacts.org) API. Unknown barcodes are stored as `Unknown Item (<barcode>)` so you can rename them with `smart_pantry.update_item` or re-scan with details.
+Scanned barcodes are resolved in priority order: **your Product Library** (barcodes you've scanned or named before) → the built-in database → the free [Open Food Facts](https://world.openfoodfacts.org) API (v2, falling back to v0, sent with a proper User-Agent and a 10-second timeout). Barcodes not found anywhere are stored as `Unknown Item (<barcode>)` — the card then shows a **Save name** box on the scan result; name the product once and every future scan of that barcode resolves instantly from your library, even offline. Empty scans are rejected instead of creating nameless items.
 
 ## License
 MIT License

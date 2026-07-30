@@ -382,3 +382,22 @@ add_recipe_missing_to_shopping_list:
       example: "Vegetable Stir Fry"
       selector:
         text:
+
+rename_item:
+  name: Rename Item
+  description: Rename a pantry item, keeping all its data. If the item has a barcode, the new name is learned so future scans of the same barcode resolve to it automatically.
+  fields:
+    old_name:
+      name: Current Name
+      description: The item's current name (e.g. an unresolved "Unknown Item (5000112637922)").
+      required: true
+      example: "Unknown Item (5000112637922)"
+      selector:
+        text:
+    new_name:
+      name: New Name
+      description: The name to give the item.
+      required: true
+      example: "Coca-Cola 330ml"
+      selector:
+        text:

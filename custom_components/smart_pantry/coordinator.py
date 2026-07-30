@@ -12,10 +12,13 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+import aiohttp
+
 from .const import (
     DOMAIN, STORAGE_KEY_PANTRY, STORAGE_VERSION,
     BUILT_IN_RECIPES, BARCODE_DB,
-    OFF_API_URL, OFF_TIMEOUT, OFF_CATEGORY_MAP, CATEGORY_DEFAULT_EXPIRY_DAYS,
+    OFF_API_URL, OFF_API_URL_V0, OFF_TIMEOUT, OFF_USER_AGENT,
+    OFF_CATEGORY_MAP, CATEGORY_DEFAULT_EXPIRY_DAYS,
     EXPIRE_WARNING_DAYS, LOW_STOCK_THRESHOLD,
     CONF_HOUSEHOLD_NAME, CONF_CURRENCY, CONF_WEEKLY_BUDGET, CONF_DIET_PREFERENCE,
     CONF_LOW_STOCK_THRESHOLD, CONF_EXPIRY_WARNING_DAYS, CONF_AUTO_ADD_TO_HA_LIST,
@@ -62,6 +65,10 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         return {
             "pantry": {},
             "shopping_list": [],
+            # Personal learned-products catalog (barcode -> product info), like
+            # MyPantryTracker's "Archive Items": once a barcode is resolved or
+            # named by the user, future scans resolve instantly and offline.
+            "product_library": {},
             "stats": {
                 "waste_prevented_lbs": 0.0, "money_saved": 0.0,
                 "meals_cooked": 0, "items_scanned": 0,
@@ -155,48 +162,112 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
     # ---- Barcode scanning ------------------------------------------------------
 
     async def _lookup_barcode(self, barcode: str) -> dict[str, Any]:
-        """Look up a barcode: built-in DB first, then Open Food Facts, else Unknown."""
+        """Look up a barcode: personal library, built-in DB, Open Food Facts, else Unknown."""
+        # 1. Personal learned-products library (fast, offline, user-curated).
+        data = await self._async_update_data()
+        library = data.get("product_library") or {}
+        if barcode in library:
+            entry = dict(library[barcode])
+            entry.setdefault("typical_expiry_days",
+                             CATEGORY_DEFAULT_EXPIRY_DAYS.get(entry.get("category", "other"), 30))
+            entry["source"] = "library"
+            return entry
+        # 2. Built-in database.
         if barcode in BARCODE_DB:
             return dict(BARCODE_DB[barcode])
-        # Try Open Food Facts (free, no API key).
+        # 3. Open Food Facts (free, no API key). OFF requires a User-Agent header;
+        #    without one it rejects requests, which is why lookups used to fail.
+        product = await self._off_fetch(barcode)
+        if product:
+            return product
+        unknown = dict(BARCODE_DB["0000000000000"])
+        unknown["name"] = f"Unknown Item ({barcode})" if barcode else "Unknown Item"
+        unknown["lookup_failed"] = True
+        return unknown
+
+    async def _off_fetch(self, barcode: str) -> dict[str, Any] | None:
+        """Fetch product info from Open Food Facts, trying the v2 then v0 API."""
         try:
             session = async_get_clientsession(self.hass)
-            url = OFF_API_URL.format(barcode=barcode)
-            async with session.get(url, timeout=OFF_TIMEOUT) as resp:
-                if resp.status == 200:
+        except Exception as err:  # noqa: BLE001 - degrade gracefully with no network
+            _LOGGER.warning("Could not get HTTP session for OFF lookup: %s", err)
+            return None
+        headers = {"User-Agent": OFF_USER_AGENT}
+        timeout = aiohttp.ClientTimeout(total=OFF_TIMEOUT)
+        for url_tpl in (OFF_API_URL, OFF_API_URL_V0):
+            url = url_tpl.format(barcode=barcode)
+            try:
+                async with session.get(url, headers=headers, timeout=timeout) as resp:
+                    if resp.status != 200:
+                        _LOGGER.warning(
+                            "Open Food Facts returned HTTP %s for barcode %s (%s)",
+                            resp.status, barcode, url,
+                        )
+                        continue
                     payload = await resp.json()
-                    product = payload.get("product") or {}
-                    name = (product.get("product_name")
-                            or product.get("product_name_en")
-                            or product.get("generic_name") or "").strip()
-                    if payload.get("status") == 1 and name:
-                        categories = (product.get("categories") or "").lower()
-                        category = "other"
-                        for keyword, mapped in OFF_CATEGORY_MAP.items():
-                            if keyword in categories:
-                                category = mapped
-                                break
-                        image_url = (product.get("image_front_small_url")
-                                     or product.get("image_front_url")
-                                     or product.get("image_url"))
-                        return {
-                            "name": name,
-                            "category": category,
-                            "typical_expiry_days": CATEGORY_DEFAULT_EXPIRY_DAYS.get(category, 30),
-                            "source": "openfoodfacts",
-                            "image_url": image_url,
-                        }
-        except Exception as err:  # noqa: BLE001 - network failures are non-fatal
-            _LOGGER.debug("Open Food Facts lookup failed for %s: %s", barcode, err)
-        unknown = dict(BARCODE_DB["0000000000000"])
-        unknown["name"] = f"Unknown Item ({barcode})"
-        return unknown
+            except Exception as err:  # noqa: BLE001 - network failures are non-fatal
+                _LOGGER.warning("Open Food Facts lookup failed for %s via %s: %s",
+                                barcode, url, err)
+                continue
+            product = payload.get("product") or {}
+            name = (product.get("product_name")
+                    or product.get("product_name_en")
+                    or product.get("generic_name") or "").strip()
+            if payload.get("status") == 1 and name:
+                categories = (product.get("categories") or "").lower()
+                category = "other"
+                for keyword, mapped in OFF_CATEGORY_MAP.items():
+                    if keyword in categories:
+                        category = mapped
+                        break
+                image_url = (product.get("image_front_small_url")
+                             or product.get("image_front_url")
+                             or product.get("image_url"))
+                return {
+                    "name": name,
+                    "category": category,
+                    "typical_expiry_days": CATEGORY_DEFAULT_EXPIRY_DAYS.get(category, 30),
+                    "source": "openfoodfacts",
+                    "image_url": image_url,
+                }
+            _LOGGER.info("Open Food Facts has no product data for barcode %s", barcode)
+            return None
+        return None
+
+    async def _learn_product(self, barcode: str, name: str, category: str,
+                             unit: str | None = None, price: float | None = None,
+                             image_url: str | None = None) -> None:
+        """Remember a barcode->product mapping in the personal library."""
+        if not barcode or not name or name.lower().startswith("unknown item"):
+            return
+        data = await self._async_update_data()
+        library = data.setdefault("product_library", {})
+        entry = library.get(barcode, {})
+        entry.update({
+            "name": name,
+            "category": category or entry.get("category", "other"),
+            "typical_expiry_days": CATEGORY_DEFAULT_EXPIRY_DAYS.get(category or "other", 30),
+        })
+        if unit: entry["unit"] = unit
+        if price is not None: entry["price"] = price
+        if image_url: entry["image_url"] = image_url
+        library[barcode] = entry
+        await self.store.async_save(data)
+        _LOGGER.info("Learned product %s for barcode %s", name, barcode)
 
     async def scan_barcode(self, barcode: str, quantity: float = 1,
                            expiration_date: str | None = None,
                            price: float | None = None) -> None:
         """Scan a barcode from camera, BT/USB scanner, or manual input."""
-        barcode = barcode.strip()
+        barcode = (barcode or "").strip()
+        if not barcode:
+            # Guard: an empty barcode must never create "Unknown Item ()".
+            _LOGGER.warning("Ignoring scan with empty barcode")
+            self.hass.bus.async_fire(f"{DOMAIN}_scan_result", {
+                "barcode": "", "error": "empty_barcode",
+                "item_name": None, "suggest_shopping_list": False,
+            })
+            return
         product = await self._lookup_barcode(barcode)
         name = product["name"]
         if expiration_date is None:
@@ -205,6 +276,10 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         await self.add_item(name=name, quantity=quantity, category=product["category"],
                             expiration_date=expiration_date, barcode=barcode, price=price,
                             image_url=product.get("image_url"))
+        # Learn successfully resolved products so future scans work offline.
+        if not product.get("lookup_failed"):
+            await self._learn_product(barcode, name, product["category"],
+                                      price=price, image_url=product.get("image_url"))
         data = await self._async_update_data()
         item = data["pantry"].get(name.lower().strip(), {})
         qty = item.get("quantity", quantity)
@@ -237,7 +312,42 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             "auto_added": bool(suggest and self.auto_add_to_ha_list),
             "source": product.get("source", "local"),
             "image_url": item.get("image_url"),
+            "lookup_failed": bool(product.get("lookup_failed")),
         })
+
+    async def rename_item(self, old_name: str, new_name: str) -> None:
+        """Rename a pantry item, keeping all its data; learns the barcode mapping."""
+        new_name = (new_name or "").strip()
+        if not new_name:
+            _LOGGER.warning("rename_item called with empty new name")
+            return
+        data = await self._async_update_data()
+        old_key = old_name.lower().strip()
+        if old_key not in data["pantry"]:
+            _LOGGER.warning("Item not found for rename: %s", old_name)
+            return
+        item = data["pantry"].pop(old_key)
+        new_key = new_name.lower()
+        if new_key in data["pantry"]:
+            # Merge quantities if the target name already exists.
+            existing = data["pantry"][new_key]
+            existing["quantity"] = existing.get("quantity", 0) + item.get("quantity", 0)
+            existing["barcode"] = existing.get("barcode") or item.get("barcode")
+            existing["image_url"] = existing.get("image_url") or item.get("image_url")
+            item = existing
+        else:
+            item["name"] = new_name
+            data["pantry"][new_key] = item
+        item["updated_at"] = datetime.now().isoformat()
+        await self.store.async_save(data)
+        await self.async_request_refresh()
+        # Teach the library so this barcode resolves to the user's name next time.
+        if item.get("barcode"):
+            await self._learn_product(item["barcode"], new_name,
+                                      item.get("category", "other"),
+                                      unit=item.get("unit"), price=item.get("price"),
+                                      image_url=item.get("image_url"))
+        _LOGGER.info("Renamed pantry item: %s -> %s", old_name, new_name)
 
     async def mark_consumed(self, name: str, quantity: float = 1) -> None:
         data = await self._async_update_data()
@@ -397,6 +507,9 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         data = await self._async_update_data()
         pantry_items = {k for k in data["pantry"].keys()}
         diet = data["config"].get(CONF_DIET_PREFERENCE, DEFAULT_DIET_PREFERENCE)
+        # Names of items expiring soon, to badge "use it up" recipes.
+        expiring_names = {(i.get("name") or "").lower()
+                          for i in self.get_expiring_items()}
         scored_recipes = []
         for recipe in BUILT_IN_RECIPES:
             if diet != "none" and diet not in recipe.get("diet", []):
@@ -406,14 +519,22 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                        if ing in pantry_items or any(ing in p or p in ing for p in pantry_items)}
             missing = ingredients - matched
             match_pct = len(matched) / len(ingredients) * 100 if ingredients else 0
+            uses_expiring = sorted(
+                ing for ing in matched
+                if any(ing in e or e in ing for e in expiring_names if e)
+            )
             scored_recipes.append({
                 "name": recipe["name"], "time": recipe["time"],
                 "match_percent": round(match_pct, 1),
                 "matched_ingredients": sorted(list(matched)),
                 "missing_ingredients": sorted(list(missing)),
                 "total_ingredients": len(ingredients),
+                "uses_expiring": uses_expiring,
             })
-        scored_recipes.sort(key=lambda x: x["match_percent"], reverse=True)
+        # Recipes that use up expiring food rank first (waste reduction),
+        # then by pantry match percentage.
+        scored_recipes.sort(key=lambda x: (len(x["uses_expiring"]) > 0, x["match_percent"]),
+                            reverse=True)
         return scored_recipes[:count]
 
     # ---- Expiry helpers -----------------------------------------------------------
