@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.1%2B-blue.svg)](https://www.home-assistant.io/)
-[![Version](https://img.shields.io/badge/version-1.5.1-orange.svg)](https://github.com/kasim141-a/Pantry-scanner)
+[![Version](https://img.shields.io/badge/version-1.5.2-orange.svg)](https://github.com/kasim141-a/Pantry-scanner)
 
 A Home Assistant custom integration for kitchen inventory management with barcode scanning, recipe suggestions from your pantry, and smart shopping list suggestions that sync with Home Assistant's built-in **Shopping List**.
 
@@ -142,6 +142,18 @@ See `custom_components/smart_pantry/example_automations.yaml` for ready-made aut
 ## Barcode lookup
 
 Scanned barcodes are resolved in priority order: **your Product Library** (barcodes you've scanned or named before) → the built-in database → the free [Open Food Facts](https://world.openfoodfacts.org) API (v2, falling back to v0, sent with a proper User-Agent and a 10-second timeout). Barcodes not found anywhere are stored as `Unknown Item (<barcode>)` — the card then shows a **Save name** box on the scan result; name the product once and every future scan of that barcode resolves instantly from your library, even offline. Empty scans are rejected instead of creating nameless items.
+
+## Development
+
+Run the regression suites from the repository root:
+
+```bash
+python3 -m pip install -r requirements_test.txt
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --test tests/test_card.js
+```
+
+The backend tests use lightweight Home Assistant test doubles, so a full Home Assistant installation is not required.
 
 ## License
 MIT License

@@ -24,55 +24,60 @@ from .const import (
     CATEGORIES, STORAGE_LOCATIONS, UNITS,
 )
 from .coordinator import SmartPantryCoordinator
+from .validation import (
+    expiration_date, non_empty_string, non_negative_number, positive_number,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_ADD_ITEM_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ITEM_NAME): cv.string,
-    vol.Optional(ATTR_QUANTITY, default=1): vol.Coerce(float),
+    vol.Required(ATTR_ITEM_NAME): non_empty_string,
+    vol.Optional(ATTR_QUANTITY, default=1): positive_number,
     vol.Optional(ATTR_UNIT, default="piece"): vol.In(UNITS),
     vol.Optional(ATTR_CATEGORY, default="other"): vol.In(CATEGORIES),
-    vol.Optional(ATTR_EXPIRATION_DATE): cv.string,
+    vol.Optional(ATTR_EXPIRATION_DATE): expiration_date,
     vol.Optional(ATTR_STORAGE_LOCATION, default="pantry"): vol.In(STORAGE_LOCATIONS),
     vol.Optional(ATTR_BARCODE): cv.string,
     vol.Optional(ATTR_NOTES): cv.string,
-    vol.Optional(ATTR_PRICE): vol.Coerce(float),
+    vol.Optional(ATTR_PRICE): non_negative_number,
     vol.Optional("image_url"): cv.string,
 })
 
-SERVICE_REMOVE_ITEM_SCHEMA = vol.Schema({vol.Required(ATTR_ITEM_NAME): cv.string})
+SERVICE_REMOVE_ITEM_SCHEMA = vol.Schema({vol.Required(ATTR_ITEM_NAME): non_empty_string})
 
 SERVICE_UPDATE_ITEM_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ITEM_NAME): cv.string,
-    vol.Optional(ATTR_QUANTITY): vol.Coerce(float),
+    vol.Required(ATTR_ITEM_NAME): non_empty_string,
+    vol.Optional(ATTR_QUANTITY): non_negative_number,
     vol.Optional(ATTR_UNIT): vol.In(UNITS),
     vol.Optional(ATTR_CATEGORY): vol.In(CATEGORIES),
-    vol.Optional(ATTR_EXPIRATION_DATE): cv.string,
+    vol.Optional(ATTR_EXPIRATION_DATE): expiration_date,
     vol.Optional(ATTR_STORAGE_LOCATION): vol.In(STORAGE_LOCATIONS),
     vol.Optional(ATTR_NOTES): cv.string,
-    vol.Optional(ATTR_PRICE): vol.Coerce(float),
+    vol.Optional(ATTR_PRICE): non_negative_number,
     vol.Optional("image_url"): cv.string,
 })
 
 SERVICE_SCAN_BARCODE_SCHEMA = vol.Schema({
     vol.Required(ATTR_BARCODE): cv.string,
-    vol.Optional(ATTR_QUANTITY, default=1): vol.Coerce(float),
-    vol.Optional(ATTR_EXPIRATION_DATE): cv.string,
-    vol.Optional(ATTR_PRICE): vol.Coerce(float),
+    vol.Optional(ATTR_QUANTITY, default=1): positive_number,
+    vol.Optional(ATTR_EXPIRATION_DATE): expiration_date,
+    vol.Optional(ATTR_PRICE): non_negative_number,
 })
 
-SERVICE_GET_RECIPES_SCHEMA = vol.Schema({vol.Optional(ATTR_RECIPE_COUNT, default=5): vol.Coerce(int)})
+SERVICE_GET_RECIPES_SCHEMA = vol.Schema({
+    vol.Optional(ATTR_RECIPE_COUNT, default=5): vol.All(vol.Coerce(int), vol.Range(min=1, max=50)),
+})
 
 SERVICE_ADD_TO_SHOPPING_LIST_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ITEM_NAME): cv.string,
-    vol.Optional(ATTR_QUANTITY, default=1): vol.Coerce(float),
+    vol.Required(ATTR_ITEM_NAME): non_empty_string,
+    vol.Optional(ATTR_QUANTITY, default=1): positive_number,
     vol.Optional(ATTR_UNIT, default="piece"): vol.In(UNITS),
     vol.Optional(ATTR_NOTES): cv.string,
 })
 
 SERVICE_MARK_CONSUMED_SCHEMA = vol.Schema({
-    vol.Required(ATTR_ITEM_NAME): cv.string,
-    vol.Optional(ATTR_QUANTITY, default=1): vol.Coerce(float),
+    vol.Required(ATTR_ITEM_NAME): non_empty_string,
+    vol.Optional(ATTR_QUANTITY, default=1): positive_number,
 })
 
 SERVICE_ADD_RECIPE_MISSING_SCHEMA = vol.Schema({
@@ -80,8 +85,8 @@ SERVICE_ADD_RECIPE_MISSING_SCHEMA = vol.Schema({
 })
 
 SERVICE_RENAME_ITEM_SCHEMA = vol.Schema({
-    vol.Required("old_name"): cv.string,
-    vol.Required("new_name"): cv.string,
+    vol.Required("old_name"): non_empty_string,
+    vol.Required("new_name"): non_empty_string,
 })
 
 

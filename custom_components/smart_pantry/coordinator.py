@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 import aiohttp
 
@@ -29,6 +31,17 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _days_until_expiry(expiration_date: str | None, today: date | None = None) -> int | None:
+    """Return whole calendar days until expiry, or None for an invalid date."""
+    if not expiration_date:
+        return None
+    try:
+        expires_on = date.fromisoformat(expiration_date)
+    except (TypeError, ValueError):
+        return None
+    return (expires_on - (today or dt_util.now().date())).days
+
+
 class SmartPantryCoordinator(DataUpdateCoordinator):
     """Smart Pantry data coordinator."""
 
@@ -36,6 +49,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self.store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PANTRY}_{entry.entry_id}")
         self.hass = hass
+        self._data_lock = asyncio.Lock()
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=timedelta(minutes=5))
 
     # ---- Config helpers ----------------------------------------------------
@@ -55,11 +69,44 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
     # ---- Storage -------------------------------------------------------------
 
     async def _async_update_data(self) -> dict[str, Any]:
+        """Load data for coordinator refreshes without racing a local mutation."""
+        async with self._data_lock:
+            return await self._async_load_data()
+
+    async def _async_load_data(self) -> dict[str, Any]:
+        """Load and migrate stored data. Callers must hold ``_data_lock``."""
         data = await self.store.async_load()
         if data is None:
             data = self._default_data()
             await self.store.async_save(data)
-        return data
+            return data
+        return self._normalize_data(data)
+
+    async def _async_save_data(self, data: dict[str, Any]) -> None:
+        """Persist a mutation and immediately publish that exact snapshot."""
+        await self.store.async_save(data)
+        self.async_set_updated_data(data)
+
+    def _current_config(self) -> dict[str, Any]:
+        """Read config-entry options, which are authoritative after a reload."""
+        return {
+            CONF_HOUSEHOLD_NAME: self.entry.options.get(CONF_HOUSEHOLD_NAME, DEFAULT_HOUSEHOLD_NAME),
+            CONF_CURRENCY: self.entry.options.get(CONF_CURRENCY, DEFAULT_CURRENCY),
+            CONF_WEEKLY_BUDGET: self.entry.options.get(CONF_WEEKLY_BUDGET, DEFAULT_WEEKLY_BUDGET),
+            CONF_DIET_PREFERENCE: self.entry.options.get(CONF_DIET_PREFERENCE, DEFAULT_DIET_PREFERENCE),
+        }
+
+    def _normalize_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Fill fields missing from older storage versions and refresh options."""
+        defaults = self._default_data()
+        normalized = {**defaults, **data}
+        normalized["stats"] = {**defaults["stats"], **(data.get("stats") or {})}
+        normalized["config"] = {
+            **defaults["config"],
+            **(data.get("config") or {}),
+            **self._current_config(),
+        }
+        return normalized
 
     def _default_data(self) -> dict[str, Any]:
         return {
@@ -74,12 +121,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                 "meals_cooked": 0, "items_scanned": 0,
                 "items_consumed": 0, "items_wasted": 0,
             },
-            "config": {
-                CONF_HOUSEHOLD_NAME: self.entry.options.get(CONF_HOUSEHOLD_NAME, DEFAULT_HOUSEHOLD_NAME),
-                CONF_CURRENCY: self.entry.options.get(CONF_CURRENCY, DEFAULT_CURRENCY),
-                CONF_WEEKLY_BUDGET: self.entry.options.get(CONF_WEEKLY_BUDGET, DEFAULT_WEEKLY_BUDGET),
-                CONF_DIET_PREFERENCE: self.entry.options.get(CONF_DIET_PREFERENCE, DEFAULT_DIET_PREFERENCE),
-            },
+            "config": self._current_config(),
         }
 
     async def async_shutdown(self) -> None:
@@ -92,39 +134,39 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                        storage_location: str = "pantry", barcode: str | None = None,
                        notes: str | None = None, price: float | None = None,
                        image_url: str | None = None) -> None:
-        data = await self._async_update_data()
-        key = name.lower().strip()
-        item = {
-            "name": name, "quantity": quantity, "unit": unit,
-            "category": category, "expiration_date": expiration_date,
-            "storage_location": storage_location, "barcode": barcode,
-            "notes": notes, "price": price, "image_url": image_url,
-            "added_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-        }
-        if key in data["pantry"]:
-            existing = data["pantry"][key]
-            item["quantity"] = existing["quantity"] + quantity
-            item["added_at"] = existing.get("added_at", item["added_at"])
-            item["notes"] = notes or existing.get("notes")
-            item["price"] = price if price is not None else existing.get("price")
-            item["image_url"] = image_url or existing.get("image_url")
-        data["pantry"][key] = item
-        data["stats"]["items_scanned"] = data["stats"].get("items_scanned", 0) + 1
-        await self.store.async_save(data)
-        await self.async_request_refresh()
+        async with self._data_lock:
+            data = await self._async_load_data()
+            key = name.lower().strip()
+            item = {
+                "name": name, "quantity": quantity, "unit": unit,
+                "category": category, "expiration_date": expiration_date,
+                "storage_location": storage_location, "barcode": barcode,
+                "notes": notes, "price": price, "image_url": image_url,
+                "added_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+            }
+            if key in data["pantry"]:
+                existing = data["pantry"][key]
+                item["quantity"] = existing["quantity"] + quantity
+                item["added_at"] = existing.get("added_at", item["added_at"])
+                item["notes"] = notes or existing.get("notes")
+                item["price"] = price if price is not None else existing.get("price")
+                item["image_url"] = image_url or existing.get("image_url")
+            data["pantry"][key] = item
+            data["stats"]["items_scanned"] = data["stats"].get("items_scanned", 0) + 1
+            await self._async_save_data(data)
         _LOGGER.info("Added/updated pantry item: %s (qty: %s %s)", name, quantity, unit)
 
     async def remove_item(self, name: str) -> None:
-        data = await self._async_update_data()
-        key = name.lower().strip()
-        if key in data["pantry"]:
+        async with self._data_lock:
+            data = await self._async_load_data()
+            key = name.lower().strip()
+            if key not in data["pantry"]:
+                _LOGGER.warning("Item not found: %s", name)
+                return
             del data["pantry"][key]
-            await self.store.async_save(data)
-            await self.async_request_refresh()
-            _LOGGER.info("Removed pantry item: %s", name)
-        else:
-            _LOGGER.warning("Item not found: %s", name)
+            await self._async_save_data(data)
+        _LOGGER.info("Removed pantry item: %s", name)
 
     async def update_item(self, name: str, quantity: float | None = None,
                           unit: str | None = None, category: str | None = None,
@@ -132,31 +174,30 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                           storage_location: str | None = None,
                           notes: str | None = None, price: float | None = None,
                           image_url: str | None = None) -> None:
-        data = await self._async_update_data()
-        key = name.lower().strip()
-        if key not in data["pantry"]:
-            _LOGGER.warning("Item not found for update: %s", name)
-            return
-        item = data["pantry"][key]
-        if quantity is not None:
-            item["quantity"] = quantity
-            # Setting quantity to zero removes the item.
-            if quantity <= 0:
-                del data["pantry"][key]
-                await self.store.async_save(data)
-                await self.async_request_refresh()
-                _LOGGER.info("Removed pantry item via zero quantity: %s", name)
+        async with self._data_lock:
+            data = await self._async_load_data()
+            key = name.lower().strip()
+            if key not in data["pantry"]:
+                _LOGGER.warning("Item not found for update: %s", name)
                 return
-        if unit is not None: item["unit"] = unit
-        if category is not None: item["category"] = category
-        if expiration_date is not None: item["expiration_date"] = expiration_date
-        if storage_location is not None: item["storage_location"] = storage_location
-        if notes is not None: item["notes"] = notes
-        if price is not None: item["price"] = price
-        if image_url is not None: item["image_url"] = image_url or None
-        item["updated_at"] = datetime.now().isoformat()
-        await self.store.async_save(data)
-        await self.async_request_refresh()
+            item = data["pantry"][key]
+            if quantity is not None:
+                item["quantity"] = quantity
+                # Setting quantity to zero removes the item.
+                if quantity <= 0:
+                    del data["pantry"][key]
+                    await self._async_save_data(data)
+                    _LOGGER.info("Removed pantry item via zero quantity: %s", name)
+                    return
+            if unit is not None: item["unit"] = unit
+            if category is not None: item["category"] = category
+            if expiration_date is not None: item["expiration_date"] = expiration_date
+            if storage_location is not None: item["storage_location"] = storage_location
+            if notes is not None: item["notes"] = notes
+            if price is not None: item["price"] = price
+            if image_url is not None: item["image_url"] = image_url or None
+            item["updated_at"] = datetime.now().isoformat()
+            await self._async_save_data(data)
         _LOGGER.info("Updated pantry item: %s", name)
 
     # ---- Barcode scanning ------------------------------------------------------
@@ -240,19 +281,20 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         """Remember a barcode->product mapping in the personal library."""
         if not barcode or not name or name.lower().startswith("unknown item"):
             return
-        data = await self._async_update_data()
-        library = data.setdefault("product_library", {})
-        entry = library.get(barcode, {})
-        entry.update({
-            "name": name,
-            "category": category or entry.get("category", "other"),
-            "typical_expiry_days": CATEGORY_DEFAULT_EXPIRY_DAYS.get(category or "other", 30),
-        })
-        if unit: entry["unit"] = unit
-        if price is not None: entry["price"] = price
-        if image_url: entry["image_url"] = image_url
-        library[barcode] = entry
-        await self.store.async_save(data)
+        async with self._data_lock:
+            data = await self._async_load_data()
+            library = data.setdefault("product_library", {})
+            entry = library.get(barcode, {})
+            entry.update({
+                "name": name,
+                "category": category or entry.get("category", "other"),
+                "typical_expiry_days": CATEGORY_DEFAULT_EXPIRY_DAYS.get(category or "other", 30),
+            })
+            if unit: entry["unit"] = unit
+            if price is not None: entry["price"] = price
+            if image_url: entry["image_url"] = image_url
+            library[barcode] = entry
+            await self._async_save_data(data)
         _LOGGER.info("Learned product %s for barcode %s", name, barcode)
 
     async def scan_barcode(self, barcode: str, quantity: float = 1,
@@ -285,13 +327,8 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         qty = item.get("quantity", quantity)
         exp_date = item.get("expiration_date")
         low_stock = qty <= self.low_stock_threshold
-        expiring = False
-        if exp_date:
-            try:
-                delta = (datetime.strptime(exp_date, "%Y-%m-%d") - datetime.now()).days
-                expiring = delta <= self.expiry_warning_days
-            except ValueError:
-                pass
+        delta = _days_until_expiry(exp_date)
+        expiring = delta is not None and delta <= self.expiry_warning_days
 
         suggest = low_stock or expiring
         # Optionally auto-add to HA's default shopping list when suggested.
@@ -321,26 +358,26 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         if not new_name:
             _LOGGER.warning("rename_item called with empty new name")
             return
-        data = await self._async_update_data()
-        old_key = old_name.lower().strip()
-        if old_key not in data["pantry"]:
-            _LOGGER.warning("Item not found for rename: %s", old_name)
-            return
-        item = data["pantry"].pop(old_key)
-        new_key = new_name.lower()
-        if new_key in data["pantry"]:
-            # Merge quantities if the target name already exists.
-            existing = data["pantry"][new_key]
-            existing["quantity"] = existing.get("quantity", 0) + item.get("quantity", 0)
-            existing["barcode"] = existing.get("barcode") or item.get("barcode")
-            existing["image_url"] = existing.get("image_url") or item.get("image_url")
-            item = existing
-        else:
-            item["name"] = new_name
-            data["pantry"][new_key] = item
-        item["updated_at"] = datetime.now().isoformat()
-        await self.store.async_save(data)
-        await self.async_request_refresh()
+        async with self._data_lock:
+            data = await self._async_load_data()
+            old_key = old_name.lower().strip()
+            if old_key not in data["pantry"]:
+                _LOGGER.warning("Item not found for rename: %s", old_name)
+                return
+            item = data["pantry"].pop(old_key)
+            new_key = new_name.lower()
+            if new_key in data["pantry"]:
+                # Merge quantities if the target name already exists.
+                existing = data["pantry"][new_key]
+                existing["quantity"] = existing.get("quantity", 0) + item.get("quantity", 0)
+                existing["barcode"] = existing.get("barcode") or item.get("barcode")
+                existing["image_url"] = existing.get("image_url") or item.get("image_url")
+                item = existing
+            else:
+                item["name"] = new_name
+                data["pantry"][new_key] = item
+            item["updated_at"] = datetime.now().isoformat()
+            await self._async_save_data(data)
         # Teach the library so this barcode resolves to the user's name next time.
         if item.get("barcode"):
             await self._learn_product(item["barcode"], new_name,
@@ -350,30 +387,30 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Renamed pantry item: %s -> %s", old_name, new_name)
 
     async def mark_consumed(self, name: str, quantity: float = 1) -> None:
-        data = await self._async_update_data()
-        key = name.lower().strip()
-        if key not in data["pantry"]:
-            _LOGGER.warning("Item not found: %s", name)
-            return
-        item = data["pantry"][key]
-        item["quantity"] -= quantity
-        item["updated_at"] = datetime.now().isoformat()
-        depleted = item["quantity"] <= 0
-        remaining_qty = max(0, item["quantity"])
-        unit = item.get("unit", "piece")
-        if depleted:
-            del data["pantry"][key]
-        data["stats"]["items_consumed"] = data["stats"].get("items_consumed", 0) + 1
-        data["stats"]["meals_cooked"] = data["stats"].get("meals_cooked", 0) + 1
-        # Use the real item price for savings when known, else fall back to 3.0.
-        try:
-            saved = float(item.get("price") or 3.0) * quantity
-        except (TypeError, ValueError):
-            saved = 3.0
-        data["stats"]["money_saved"] = data["stats"].get("money_saved", 0) + saved
-        data["stats"]["waste_prevented_lbs"] = data["stats"].get("waste_prevented_lbs", 0) + 0.5
-        await self.store.async_save(data)
-        await self.async_request_refresh()
+        async with self._data_lock:
+            data = await self._async_load_data()
+            key = name.lower().strip()
+            if key not in data["pantry"]:
+                _LOGGER.warning("Item not found: %s", name)
+                return
+            item = data["pantry"][key]
+            item["quantity"] -= quantity
+            item["updated_at"] = datetime.now().isoformat()
+            depleted = item["quantity"] <= 0
+            remaining_qty = max(0, item["quantity"])
+            unit = item.get("unit", "piece")
+            if depleted:
+                del data["pantry"][key]
+            data["stats"]["items_consumed"] = data["stats"].get("items_consumed", 0) + 1
+            data["stats"]["meals_cooked"] = data["stats"].get("meals_cooked", 0) + 1
+            # Use the real item price for savings when known, else fall back to 3.0.
+            try:
+                saved = float(item.get("price") or 3.0) * quantity
+            except (TypeError, ValueError):
+                saved = 3.0
+            data["stats"]["money_saved"] = data["stats"].get("money_saved", 0) + saved
+            data["stats"]["waste_prevented_lbs"] = data["stats"].get("waste_prevented_lbs", 0) + 0.5
+            await self._async_save_data(data)
         # Suggest replenishment when consumption depletes or drops below threshold.
         if depleted or remaining_qty <= self.low_stock_threshold:
             if self.auto_add_to_ha_list:
@@ -390,15 +427,21 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
     async def add_to_shopping_list(self, name: str, quantity: float = 1,
                                    unit: str = "piece", notes: str | None = None) -> None:
         """Add an item to both the internal list and HA's default Shopping List."""
-        data = await self._async_update_data()
-        existing = next((i for i in data["shopping_list"] if i["name"].lower() == name.lower()), None)
-        if not existing:
+        name = name.strip()
+        async with self._data_lock:
+            data = await self._async_load_data()
+            existing = next(
+                (i for i in data["shopping_list"] if i["name"].lower() == name.lower()),
+                None,
+            )
+            if existing:
+                _LOGGER.debug("Shopping list already contains %s; skipping duplicate", name)
+                return
             data["shopping_list"].append({
                 "name": name, "quantity": quantity, "unit": unit,
                 "notes": notes, "added_at": datetime.now().isoformat(), "purchased": False,
             })
-            await self.store.async_save(data)
-            await self.async_request_refresh()
+            await self._async_save_data(data)
         await self._ha_shopping_list_add(name, quantity, unit)
         _LOGGER.info("Added to shopping list: %s", name)
 
@@ -413,7 +456,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         display_name = f"{name} ({quantity:g} {unit})" if quantity != 1 or unit != "piece" else name
         try:
             await self.hass.services.async_call(
-                "shopping_list", "add_item", {"name": display_name}, blocking=False,
+                "shopping_list", "add_item", {"name": display_name}, blocking=True,
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("HA shopping_list sync failed: %s", err)
@@ -493,10 +536,10 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
         return sorted(suggestions.values(), key=lambda s: s["name"].lower())
 
     async def clear_shopping_list(self) -> None:
-        data = await self._async_update_data()
-        data["shopping_list"] = []
-        await self.store.async_save(data)
-        await self.async_request_refresh()
+        async with self._data_lock:
+            data = await self._async_load_data()
+            data["shopping_list"] = []
+            await self._async_save_data(data)
         # Also mark HA's default list complete items cleared (leave user list intact
         # unless the shopping_list integration exposes complete/clear services).
         _LOGGER.info("Cleared internal shopping list")
@@ -505,18 +548,27 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
 
     async def get_recipes(self, count: int = 5) -> list[dict[str, Any]]:
         data = await self._async_update_data()
-        pantry_items = {k for k in data["pantry"].keys()}
+        pantry = data["pantry"]
+        pantry_items = set(pantry)
         diet = data["config"].get(CONF_DIET_PREFERENCE, DEFAULT_DIET_PREFERENCE)
         # Names of items expiring soon, to badge "use it up" recipes.
         expiring_names = {(i.get("name") or "").lower()
-                          for i in self.get_expiring_items()}
+                          for i in self._get_expiring_items(data, self.expiry_warning_days)}
         scored_recipes = []
         for recipe in BUILT_IN_RECIPES:
             if diet != "none" and diet not in recipe.get("diet", []):
                 continue
-            ingredients = set(ing.lower() for ing in recipe["ingredients"])
-            matched = {ing for ing in ingredients
-                       if ing in pantry_items or any(ing in p or p in ing for p in pantry_items)}
+            ingredients = {ing.lower() for ing in recipe["ingredients"]}
+            ingredient_items: dict[str, str] = {}
+            for ingredient in sorted(ingredients):
+                matched_key = next(
+                    (key for key in sorted(pantry_items)
+                     if ingredient == key or ingredient in key or key in ingredient),
+                    None,
+                )
+                if matched_key is not None:
+                    ingredient_items[ingredient] = pantry[matched_key]["name"]
+            matched = set(ingredient_items)
             missing = ingredients - matched
             match_pct = len(matched) / len(ingredients) * 100 if ingredients else 0
             uses_expiring = sorted(
@@ -526,8 +578,11 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
             scored_recipes.append({
                 "name": recipe["name"], "time": recipe["time"],
                 "match_percent": round(match_pct, 1),
-                "matched_ingredients": sorted(list(matched)),
-                "missing_ingredients": sorted(list(missing)),
+                "matched_ingredients": sorted(matched),
+                "missing_ingredients": sorted(missing),
+                # The card needs the actual pantry key when fuzzy matching maps
+                # an ingredient such as "egg" to an item such as "Brown Eggs".
+                "ingredient_items": ingredient_items,
                 "total_ingredients": len(ingredients),
                 "uses_expiring": uses_expiring,
             })
@@ -539,26 +594,22 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
 
     # ---- Expiry helpers -----------------------------------------------------------
 
+    def _get_expiring_items(self, data: dict[str, Any], days: int) -> list[dict[str, Any]]:
+        today = dt_util.now().date()
+        expiring = []
+        for item in data.get("pantry", {}).values():
+            delta = _days_until_expiry(item.get("expiration_date"), today)
+            if delta is not None and delta <= days:
+                item_copy = dict(item)
+                item_copy["days_until_expiry"] = delta
+                expiring.append(item_copy)
+        expiring.sort(key=lambda x: x["days_until_expiry"])
+        return expiring
+
     def get_expiring_items(self, days: int | None = None) -> list[dict[str, Any]]:
         if days is None:
             days = self.expiry_warning_days
-        data = self.data or {}
-        pantry = data.get("pantry", {})
-        now = datetime.now()
-        expiring = []
-        for item in pantry.values():
-            if item.get("expiration_date"):
-                try:
-                    exp = datetime.strptime(item["expiration_date"], "%Y-%m-%d")
-                    delta = (exp - now).days
-                    if delta <= days:
-                        item_copy = dict(item)
-                        item_copy["days_until_expiry"] = delta
-                        expiring.append(item_copy)
-                except ValueError:
-                    continue
-        expiring.sort(key=lambda x: x["days_until_expiry"])
-        return expiring
+        return self._get_expiring_items(self.data or {}, days)
 
     def get_expired_items(self) -> list[dict[str, Any]]:
         return [i for i in self.get_expiring_items(9999) if i["days_until_expiry"] < 0]
@@ -574,7 +625,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
     def get_inventory(self) -> list[dict[str, Any]]:
         """Full inventory with computed expiry info, sorted by name."""
         data = self.data or {}
-        now = datetime.now()
+        today = dt_util.now().date()
         inventory = []
         for item in data.get("pantry", {}).values():
             entry = {
@@ -590,12 +641,7 @@ class SmartPantryCoordinator(DataUpdateCoordinator):
                 "image_url": item.get("image_url"),
                 "days_until_expiry": None,
             }
-            if entry["expiration_date"]:
-                try:
-                    exp = datetime.strptime(entry["expiration_date"], "%Y-%m-%d")
-                    entry["days_until_expiry"] = (exp - now).days
-                except ValueError:
-                    pass
+            entry["days_until_expiry"] = _days_until_expiry(entry["expiration_date"], today)
             inventory.append(entry)
         inventory.sort(key=lambda i: (i["name"] or "").lower())
         return inventory

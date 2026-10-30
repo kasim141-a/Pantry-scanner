@@ -1,11 +1,11 @@
-// Smart Pantry Card v1.5.1 - Lovelace custom card for the Smart Pantry Scanner integration.
+// Smart Pantry Card v1.5.2 - Lovelace custom card for the Smart Pantry Scanner integration.
 // Views: main (dashboard + suggestions), inventory (browse/edit items), recipes, scan.
 // - Auto-discovers Smart Pantry entities (no exact entity id needed).
 // - Shopping suggestions for low-stock and expiring items with one-tap add.
 // - Scan via mobile camera (ZXing, HTTPS) or BT/USB keyboard-wedge scanner.
 // - Syncs additions to Home Assistant's default Shopping List.
 
-const SMART_PANTRY_CARD_VERSION = '1.5.1';
+const SMART_PANTRY_CARD_VERSION = '1.5.2';
 
 // Category fallback icons used when an item has no product image.
 const SP_CATEGORY_ICONS = {
@@ -21,6 +21,9 @@ class SmartPantryCard extends HTMLElement {
     this._hass = null;
     this._view = 'main';
     this._recipes = [];
+    this._recipesLoading = false;
+    this._recipesLoaded = false;
+    this._recipesError = null;
     this._lastScan = null;
     this._cameraActive = false;
     this._codeReader = null;
@@ -59,6 +62,9 @@ class SmartPantryCard extends HTMLElement {
         hass.connection
           .subscribeEvents((event) => {
             this._recipes = (event && event.data && event.data.recipes) || [];
+            this._recipesLoading = false;
+            this._recipesLoaded = true;
+            this._recipesError = null;
             this._view = 'recipes';
             this._renderCard();
           }, 'smart_pantry_recipes_suggested')
@@ -257,9 +263,9 @@ class SmartPantryCard extends HTMLElement {
       return;
     }
 
+    if (this._view !== 'scan') this._detachWedgeListener();
     if (this._view === 'recipes') { this._renderRecipes(); return; }
     if (this._view === 'scan') { this._renderScan(); return; }
-    this._detachWedgeListener();
     if (this._view === 'inventory') { this._renderInventory(baseId); return; }
     this._renderMain(baseId);
   }
@@ -407,7 +413,9 @@ class SmartPantryCard extends HTMLElement {
     if (recipesBtn) {
       recipesBtn.onclick = () => {
         this._view = 'recipes';
-        hass.callService('smart_pantry', 'get_recipes', { recipe_count: 8 });
+        this._recipes = [];
+        this._recipesLoaded = false;
+        this._loadRecipes();
         this._renderCard();
       };
     }
@@ -708,6 +716,19 @@ class SmartPantryCard extends HTMLElement {
 
   // ---- Recipes view -------------------------------------------------------
 
+  _loadRecipes() {
+    if (this._recipesLoading || !this._hass) return;
+    this._recipesLoading = true;
+    this._recipesError = null;
+    this._hass.callService('smart_pantry', 'get_recipes', { recipe_count: 8 })
+      .catch((err) => {
+        this._recipesLoading = false;
+        this._recipesLoaded = false;
+        this._recipesError = (err && err.message) || 'Could not load recipes.';
+        if (this._view === 'recipes') this._renderCard();
+      });
+  }
+
   _renderRecipes() {
     const hass = this._hass;
     let html = this._styles() + '<div class="sp-container">';
@@ -715,11 +736,20 @@ class SmartPantryCard extends HTMLElement {
     html += '<div class="sp-section-title">🍳 Recipes from Your Pantry</div>';
 
     if (!this._recipes || this._recipes.length === 0) {
-      html += '<div class="sp-empty">⏳ Finding recipes from your pantry…</div>';
+      if (this._recipesError) {
+        html += '<div class="sp-warning">' + this._escape(this._recipesError) + '</div>' +
+          '<button class="sp-btn sp-btn-primary" id="sp-retry-recipes">Retry</button>';
+      } else if (this._recipesLoaded) {
+        html += '<div class="sp-empty">No recipes match your current dietary preference.</div>';
+      } else {
+        html += '<div class="sp-empty">⏳ Finding recipes from your pantry…</div>';
+        this._loadRecipes();
+      }
       html += '</div>';
       this.content.innerHTML = html;
       this._wireBack();
-      hass.callService('smart_pantry', 'get_recipes', { recipe_count: 8 });
+      const retry = this.content.querySelector('#sp-retry-recipes');
+      if (retry) retry.onclick = () => { this._loadRecipes(); this._renderCard(); };
       return;
     }
 
@@ -797,9 +827,10 @@ class SmartPantryCard extends HTMLElement {
         const recipe = this._recipes[idx];
         if (!recipe) return;
         const matched = recipe.matched_ingredients || [];
+        const ingredientItems = recipe.ingredient_items || {};
         matched.forEach((ing) => {
           hass.callService('smart_pantry', 'mark_consumed', {
-            item_name: this._ingredientName(ing), quantity: 1,
+            item_name: ingredientItems[ing] || this._ingredientName(ing), quantity: 1,
           });
         });
         btn.textContent = '✓ Enjoy your meal!';

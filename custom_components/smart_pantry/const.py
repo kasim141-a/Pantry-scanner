@@ -155,7 +155,7 @@ OFF_API_URL: Final = "https://world.openfoodfacts.org/api/v2/product/{barcode}.j
 OFF_API_URL_V0: Final = "https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
 OFF_TIMEOUT: Final = 8
 OFF_USER_AGENT: Final = (
-    "SmartPantryScanner/1.5.1 (Home Assistant integration; "
+    "SmartPantryScanner/1.5.2 (Home Assistant integration; "
     "https://github.com/kasim141-a/Pantry-scanner)"
 )
 
